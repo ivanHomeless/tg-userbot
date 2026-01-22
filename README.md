@@ -104,8 +104,7 @@ tail -f logs/bot_work.log
 ---
 
 ### Как пользоваться этим README:
-1. **Зависимости**: Создай файл `requirements.txt` и добавь туда:
-   ```text
+1. **Зависимости**: Создай файл `requirements.txt` и добавь туда:**
    telethon
    python-dotenv
    openai
