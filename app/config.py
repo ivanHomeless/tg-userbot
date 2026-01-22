@@ -12,7 +12,7 @@ PHONE = os.getenv("PHONE", "")
 # Настройки бота
 SOURCES = ["@vokop_test", "@bots_paty", "@cvo_yarmarka_chat", "@kapyushon_kupol_svo"]
 DEST = "@vokopetestdest"
-MODEL = "xiaomi/mimo-v2-flash:free" # tngtech/deepseek-r1t2-chimera:free
+MODEL = "tngtech/deepseek-r1t2-chimera:free" # xiaomi/mimo-v2-flash:free
 POST_DELAY = 2.0
 
 # Пути к базам и сессиям
