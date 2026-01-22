@@ -30,7 +30,8 @@ def setup_logging():
         handlers=[
             logging.FileHandler("logs/bot_work.log", encoding="utf-8"),
             #logging.StreamHandler(sys.stdout)
-        ]
+        ],
+
     )
     # Гасим лишние логи библиотек
     logging.getLogger('telethon').setLevel(logging.WARNING)
@@ -44,7 +45,6 @@ async def main():
 
     logger = logging.getLogger("main")
     logger.info("Запуск приложения из папки app...")
-    print('Запуск бота...')
     try:
         bot = TGBot()
         await bot.run()

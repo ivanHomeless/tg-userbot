@@ -23,4 +23,4 @@ MODEL = os.getenv("MODEL", "tngtech/deepseek-r1t2-chimera:free")
 SESSION_NAME = "data/userbot_session"
 DB_PATH = "data/seen.sqlite3"
 TEMP_DIR = "tmp_media"
-POST_DELAY = 600  # 10 минут
+POST_DELAY = 10 #600  # 10 минут

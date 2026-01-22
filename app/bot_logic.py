@@ -41,52 +41,53 @@ class TGBot:
                 logger.debug(f"Инфо по подписке {src}: {e}")
 
     async def post_album(self, gid):
-        # Увеличиваем ожидание, чтобы точно собрать все части тяжелого поста
+        # 1. Ждем, пока Telegram дошлет все части альбома
         await asyncio.sleep(10)
 
         async with self.post_lock:
-            tasks = self.album_cache.get(gid, [])
-            raw_text = self.album_text.get(gid, "")
+            # Получаем данные и СРАЗУ удаляем их из кэша, чтобы другие процессы не мешали
+            tasks = self.album_cache.pop(gid, [])
+            raw_text = self.album_text.pop(gid, "")
 
             if not tasks:
                 return
 
-            # Скачиваем файлы
+            logger.info(f"📦 Начинаю сборку альбома {gid} ({len(tasks)} файлов)")
+
+            # 2. Соблюдаем общую задержку между постами
+            wait = (self.last_post_time + POST_DELAY) - time.time()
+            if wait > 0:
+                logger.info(f"⏳ Очередь: ждем {int(wait)} сек...")
+                await asyncio.sleep(wait)
+
+            # 3. Дожидаемся скачивания всех файлов
             paths = await asyncio.gather(*tasks, return_exceptions=True)
             valid_paths = [p for p in paths if isinstance(p, str) and Path(p).exists()]
 
-            # Делаем рерайт
+            # 4. Рерайт
             rewritten = ai.rewrite_text(raw_text) if raw_text else ""
 
-            # 1. Сначала пробуем отправить медиа
-            media_sent = False
+            # 5. Отправка
             try:
                 if valid_paths:
                     if len(rewritten) <= 1024:
                         await self.client.send_file(DEST, valid_paths, caption=rewritten)
-                        media_sent = True
                     else:
                         await self.client.send_file(DEST, valid_paths)
-                        media_sent = True
-                        await asyncio.sleep(2)  # Пауза перед текстом
-            except Exception as e:
-                logger.error(f" Ошибка при отправке медиа в альбоме {gid}: {e}")
-
-            # 2. Если текст длинный ИЛИ медиа не отправились, но текст есть — шлем его отдельно
-            try:
-                if rewritten and (len(rewritten) > 1024 or not media_sent):
+                        await asyncio.sleep(2)
+                        await self.client.send_message(DEST, rewritten)
+                elif rewritten:
+                    # Если файлы не скачались, но есть текст - шлем хотя бы текст
                     await self.client.send_message(DEST, rewritten)
-                    logger.info(f" Текст для альбома {gid} отправлен отдельным постом")
-            except Exception as e:
-                logger.error(f" Ошибка при отправке текста альбома {gid}: {e}")
 
-            # 3. Очистка
+                self.last_post_time = time.time()
+                logger.info(f"✅ Альбом {gid} успешно отправлен")
+            except Exception as e:
+                logger.error(f"❌ Ошибка отправки альбома {gid}: {e}")
             finally:
-                self.album_cache.pop(gid, None)
-                self.album_text.pop(gid, None)
+                # Очистка файлов
                 for p in valid_paths:
                     Path(p).unlink(missing_ok=True)
-                logger.info(f" Завершена обработка альбома {gid}")
 
     async def safe_post(self, text, file_path=None):
         """Отправка одиночного сообщения с задержкой"""
@@ -115,18 +116,15 @@ class TGBot:
                     Path(file_path).unlink(missing_ok=True)
 
     async def process_message(self, event):
-        """Обработка входящих событий"""
         if not (event.is_channel or event.is_group):
             return
 
-        # Получаем данные о чате
+        # Проверка источника
         chat = await event.get_chat()
         username = getattr(chat, "username", None)
         src_id = f"@{username}".lower() if username else str(event.chat_id)
 
-        # Проверка источника
-        clean_sources = [s.strip().lower() for s in SOURCES]
-        if not any(s in src_id for s in clean_sources):
+        if not any(s.strip().lower() in src_id for s in SOURCES):
             return
 
         # Анти-дубль
@@ -138,21 +136,23 @@ class TGBot:
         gid = msg.grouped_id
 
         if gid:
-            # Логика альбомов
+            # Важно: создаем корутину скачивания, но не ждем её здесь!
+            coro = self.client.download_media(msg, file=TEMP_DIR)
+
             if gid not in self.album_cache:
-                self.album_cache[gid] = [self.client.download_media(msg, file=TEMP_DIR)]
+                self.album_cache[gid] = [coro]
                 self.album_text[gid] = (msg.message or "").strip()
-                # Создаем задачу на отправку через 4 секунды
+                # Запускаем фоновую задачу на сборку
                 asyncio.create_task(self.post_album(gid))
             else:
-                # Добавляем задачу скачивания в список
-                self.album_cache[gid].append(self.client.download_media(msg, file=TEMP_DIR))
+                self.album_cache[gid].append(coro)
+                if not self.album_text[gid] and msg.message:
+                    self.album_text[gid] = msg.message.strip()
         else:
-            # Логика одиночных сообщений
+            # Одиночный пост
+            path = await self.client.download_media(msg, file=TEMP_DIR) if msg.media else None
             text = (msg.message or "").strip()
             rewritten = ai.rewrite_text(text) if text else ""
-
-            path = await self.client.download_media(msg, file=TEMP_DIR) if msg.media else None
             await self.safe_post(rewritten, path)
 
     async def run(self):
@@ -167,5 +167,5 @@ class TGBot:
         # Регистрация обработчика
         self.client.add_event_handler(self.process_message, events.NewMessage)
 
-        logger.info("Бот успешно запущен. Нажмите Ctrl+C для остановки.")
+        print("Бот успешно запущен. Нажмите Ctrl+C для остановки.")
         await self.client.run_until_disconnected()
