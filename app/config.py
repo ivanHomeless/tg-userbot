@@ -10,7 +10,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 PHONE = os.getenv("PHONE", "")
 
 # Настройки бота
-SOURCES = ["@vokop_test", "@bots_paty"]
+SOURCES = ["@vokop_test", "@bots_paty", "@cvo_yarmarka_chat", "@kapyushon_kupol_svo"]
 DEST = "@vokopetestdest"
 MODEL = "tngtech/deepseek-r1t2-chimera:free"
 POST_DELAY = 2.0
