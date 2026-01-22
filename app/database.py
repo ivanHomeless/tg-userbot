@@ -1,6 +1,6 @@
 import sqlite3
 import time
-from config import DB_PATH
+from app.config import DB_PATH
 
 def db_init():
     with sqlite3.connect(DB_PATH) as con:

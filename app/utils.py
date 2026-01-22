@@ -1,8 +1,8 @@
 import re
 import logging
 from openai import OpenAI
-from config import OPENROUTER_API_KEY, MODEL
-from prompts import SYSTEM_PROMPT  # <-- Добавили импорт
+from app.config import OPENROUTER_API_KEY, MODEL
+from app.prompts import SYSTEM_PROMPT  # <-- Добавили импорт
 
 logger = logging.getLogger(__name__)
 

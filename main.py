@@ -2,14 +2,19 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
-from bot_logic import TGBot
+
+# Импортируем класс бота из папки app
+from app.bot_logic import TGBot
+
+
+def init_environment():
+    """Создаем структуру папок перед запуском"""
+    for folder in ["data", "logs", "tmp_media"]:
+        Path(folder).mkdir(exist_ok=True)
 
 
 def setup_logging():
-    # Создаем папку для логов, если её нет
-    Path("logs").mkdir(exist_ok=True)
-
-    log_format = '%(asctime)s - %(levelname)s - %(message)s'
+    log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     logging.basicConfig(
         level=logging.INFO,
         format=log_format,
@@ -18,27 +23,28 @@ def setup_logging():
             logging.StreamHandler(sys.stdout)
         ]
     )
+    # Гасим лишние логи библиотек
     logging.getLogger('telethon').setLevel(logging.WARNING)
+    logging.getLogger('openai').setLevel(logging.WARNING)
+    logging.getLogger('httpx').setLevel(logging.WARNING)
 
 
 async def main():
-    Path("data").mkdir(exist_ok=True)
-    Path("tmp_media").mkdir(exist_ok=True)
-    # ------------------------------------------------
-
+    init_environment()
     setup_logging()
-    logger = logging.getLogger(__name__)
-    logger.info("Инициализация бота...")
+
+    logger = logging.getLogger("main")
+    logger.info("Запуск приложения из папки app...")
 
     try:
         bot = TGBot()
         await bot.run()
     except Exception as e:
-        logger.error(f"Критическая ошибка при запуске: {e}", exc_info=True)
+        logger.error(f"Критическая ошибка: {e}", exc_info=True)
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n[!] Бот остановлен вручную.")
+        print("\n[!] Работа бота завершена пользователем.")

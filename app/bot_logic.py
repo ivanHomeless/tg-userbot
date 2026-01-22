@@ -6,9 +6,9 @@ from telethon import TelegramClient, events
 from telethon.tl.functions.channels import JoinChannelRequest
 
 # Импортируем настройки и вспомогательные функции
-from config import API_ID, API_HASH, PHONE, SOURCES, DEST, TEMP_DIR, POST_DELAY, SESSION_NAME
-from database import db_init, is_seen, mark_seen
-from utils import get_llm_client, rewrite_text
+from app.config import API_ID, API_HASH, PHONE, SOURCES, DEST, TEMP_DIR, POST_DELAY, SESSION_NAME
+from app.database import db_init, is_seen, mark_seen
+from app.utils import get_llm_client, rewrite_text
 
 logger = logging.getLogger(__name__)
 
