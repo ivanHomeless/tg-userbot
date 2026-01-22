@@ -8,7 +8,7 @@ from telethon.tl.functions.channels import JoinChannelRequest
 # Импортируем настройки и вспомогательные функции
 from app.config import API_ID, API_HASH, PHONE, SOURCES, DEST, TEMP_DIR, POST_DELAY, SESSION_NAME
 from app.database import db_init, is_seen, mark_seen
-import ai
+from app import ai
 
 logger = logging.getLogger(__name__)
 
