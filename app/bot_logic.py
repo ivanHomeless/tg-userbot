@@ -18,7 +18,6 @@ class TGBot:
         # Инициализируем клиент без await (в конструкторе это запрещено)
         # Используем путь data/userbot_session
         self.client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
-        self.llm = None
         self.post_lock = asyncio.Lock()
         self.last_post_time = 0.0
         self.album_cache = {}
@@ -27,7 +26,6 @@ class TGBot:
     async def setup(self):
         """Инициализация базы и AI клиента"""
         db_init()
-        self.llm = get_llm_client()
         Path(TEMP_DIR).mkdir(exist_ok=True)
         logger.info("Компоненты (DB, AI, MediaDir) готовы.")
 
@@ -58,7 +56,7 @@ class TGBot:
             paths = await asyncio.gather(*tasks)
             valid_paths = [p for p in paths if p]
 
-            rewritten = rewrite_text(raw_text, self.llm) if raw_text else ""
+            rewritten = rewrite_text(raw_text) if raw_text else ""
 
             try:
                 if valid_paths:
@@ -142,7 +140,7 @@ class TGBot:
         else:
             # Логика одиночных сообщений
             text = (msg.message or "").strip()
-            rewritten = rewrite_text(text, self.llm) if text else ""
+            rewritten = rewrite_text(text) if text else ""
 
             path = await self.client.download_media(msg, file=TEMP_DIR) if msg.media else None
             await self.safe_post(rewritten, path)
