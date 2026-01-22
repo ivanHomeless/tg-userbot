@@ -105,10 +105,20 @@ class TGBot:
                     Path(p).unlink(missing_ok=True)
 
     async def process_message(self, event):
-        if not (event.is_channel or event.is_group): return
+        if not (event.is_channel or event.is_group):
+            return
+
+        # ← ВОЗВРАЩЕНА ПРОВЕРКА ИСТОЧНИКОВ (как было изначально)
+        chat = await event.get_chat()
+        username = getattr(chat, "username", None)
+        src_id = f"@{username}".lower() if username else str(event.chat_id)
+
+        if not any(s.strip().lower() in src_id for s in SOURCES):
+            return
 
         chat_id = event.chat_id
-        if is_seen(chat_id, event.id): return
+        if is_seen(chat_id, event.id):
+            return
         mark_seen(chat_id, event.id)
 
         msg = event.message
@@ -162,7 +172,8 @@ class TGBot:
                 except Exception as e:
                     logger.error(f"Ошибка одиночного поста: {e}")
                 finally:
-                    if path: Path(path).unlink(missing_ok=True)
+                    if path:
+                        Path(path).unlink(missing_ok=True)
 
     async def run(self):
         logger.info("Запуск...")
@@ -170,7 +181,7 @@ class TGBot:
         await self.setup()
         await self.join_sources()
 
-        self.client.add_event_handler(self.process_message, events.NewMessage(chats=SOURCES))
+        self.client.add_event_handler(self.process_message, events.NewMessage())
 
         print("Бот работает...")
         await self.client.run_until_disconnected()
