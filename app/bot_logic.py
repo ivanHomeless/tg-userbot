@@ -74,7 +74,7 @@ class TGBot:
                 for p in valid_paths:
                     Path(p).unlink(missing_ok=True)
 
-    async def save_post(self, text, file_path=None):
+    async def safe_post(self, text, file_path=None):
         """Отправка одиночного сообщения с задержкой"""
         async with self.post_lock:
             wait = (self.last_post_time + POST_DELAY) - time.time()
@@ -95,7 +95,7 @@ class TGBot:
                 self.last_post_time = time.time()
                 logger.info("✅ Одиночный пост отправлен.")
             except Exception as e:
-                logger.error(f"Ошибка save_post: {e}")
+                logger.error(f"Ошибка safe_post: {e}")
             finally:
                 if file_path:
                     Path(file_path).unlink(missing_ok=True)
@@ -139,7 +139,7 @@ class TGBot:
             rewritten = ai.rewrite_text(text) if text else ""
 
             path = await self.client.download_media(msg, file=TEMP_DIR) if msg.media else None
-            await self.save_post(rewritten, path)
+            await self.safe_post(rewritten, path)
 
     async def run(self):
         """Основной цикл запуска"""
