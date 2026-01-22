@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from telethon import TelegramClient, events
 from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.functions.messages import ImportChatInviteRequest
 
 from app.config import API_ID, API_HASH, PHONE, SOURCES, DEST, TEMP_DIR, POST_DELAY, SESSION_NAME
 from app.database import db_init, is_seen, mark_seen
@@ -30,28 +31,37 @@ class TGBot:
         logger.info("Компоненты готовы.")
 
     async def join_sources(self):
-        """Подписка на источники (поддержка ID + username)"""
+        """Универсальная подписка: ссылки + username + ID"""
         logger.info(f"🔄 Подписка на {len(SOURCES)} источников...")
 
         for src in SOURCES:
             try:
-                # 1. Если это username (с @ или без) — подписываемся напрямую
-                clean_src = src.strip().lstrip('@')
-                if clean_src.startswith('username') or clean_src.isalpha():
-                    await self.client(JoinChannelRequest(clean_src))
-                    logger.info(f"✅ Username {clean_src}")
+                clean_src = src.strip()
 
-                # 2. Если это ID канала (начинается с -100) — используем resolve_peer
+                # 1. Приватная ссылка t.me/+...
+                if clean_src.startswith('https://t.me/+'):
+                    # Извлекаем hash из ссылки
+                    invite_hash = clean_src.split('+')[-1]
+                    result = await self.client(ImportChatInviteRequest(invite_hash))
+                    channel = await self.client.get_entity(result)
+                    logger.info(f"✅ Приватный канал: {getattr(channel, 'title', 'Unknown')}")
+
+                # 2. Публичный username
+                elif '@' in clean_src or clean_src.isalpha() or clean_src.startswith('t.me/'):
+                    clean_username = clean_src.lstrip('@t.me/').strip('/')
+                    await self.client(JoinChannelRequest(clean_username))
+                    logger.info(f"✅ Username: {clean_username}")
+
+                # 3. ID канала (если уже участник)
                 elif clean_src.startswith('-100'):
                     entity = await self.client.get_entity(int(clean_src))
                     await self.client(JoinChannelRequest(entity))
-                    logger.info(f"✅ ID канал {clean_src}")
+                    logger.info(f"✅ ID: {clean_src}")
 
-                # Пауза против флуда
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)  # Пауза против флуда
 
             except Exception as e:
-                logger.warning(f"⚠️ Не удалось подписаться на {src}: {e}")
+                logger.warning(f"⚠️ {src}: {e}")
 
         logger.info("✅ Подписки завершены")
 
