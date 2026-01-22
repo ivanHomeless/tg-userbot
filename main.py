@@ -20,7 +20,7 @@ def setup_logging():
         format=log_format,
         handlers=[
             logging.FileHandler("logs/bot_work.log", encoding="utf-8"),
-            logging.StreamHandler(sys.stdout)
+            #logging.StreamHandler(sys.stdout)
         ]
     )
     # Гасим лишние логи библиотек
@@ -35,7 +35,7 @@ async def main():
 
     logger = logging.getLogger("main")
     logger.info("Запуск приложения из папки app...")
-
+    print('Запуск бота...')
     try:
         bot = TGBot()
         await bot.run()
