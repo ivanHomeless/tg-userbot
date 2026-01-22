@@ -1,8 +1,7 @@
-import re
 import logging
 from openai import OpenAI
 from app.config import OPENROUTER_API_KEY, MODEL
-from app.prompts import SYSTEM_PROMPT  # <-- Добавили импорт
+from app.prompts import SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +32,8 @@ def rewrite_text(text, client=None, max_retries=3):
         return ""
     # Указываем тип переменной явно
     messages = [
-        {"role": "system", "content": ""},
-        {"role": "user", "content": "Напиши крипипасту больше 1024 символов"}
+        {"role": "system", "content": str(SYSTEM_PROMPT)},
+        {"role": "user", "content": str(text)}
     ]
     attempt = 0
     base_delay = 2  # Начальная задержка в секундах
