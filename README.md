@@ -61,7 +61,7 @@ API_HASH=your_hash_here
 PHONE=+79991234567
 
 # Настройки каналов
-SOURCES=@channel_1,https://t.me/channel_2
+SOURCES=@channel_1,@channel_2
 DEST=@your_channel_username
 
 # AI (OpenRouter)
