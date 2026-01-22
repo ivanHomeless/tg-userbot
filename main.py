@@ -35,9 +35,9 @@ def setup_logging():
 
     )
     # Гасим лишние логи библиотек
-    logging.getLogger('telethon').setLevel(logging.WARNING)
-    logging.getLogger('openai').setLevel(logging.WARNING)
-    logging.getLogger('httpx').setLevel(logging.WARNING)
+    #logging.getLogger('telethon').setLevel(logging.WARNING)
+    #logging.getLogger('openai').setLevel(logging.WARNING)
+    #logging.getLogger('httpx').setLevel(logging.WARNING)
 
 
 async def main():

@@ -3,13 +3,16 @@ import time
 import logging
 from pathlib import Path
 from telethon import TelegramClient, events
+from telethon.tl.types import Channel
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
+from telethon.errors import UserAlreadyParticipantError
 
 from app.config import API_ID, API_HASH, PHONE, SOURCES, DEST, TEMP_DIR, POST_DELAY, SESSION_NAME
 from app.database import db_init, is_seen, mark_seen
 from app.utils import split_text
 from app import ai
+
 
 logger = logging.getLogger(__name__)
 
@@ -31,39 +34,48 @@ class TGBot:
         logger.info("Компоненты готовы.")
 
     async def join_sources(self):
-        """Универсальная подписка: ссылки + username + ID"""
+        """Подписка с обработкой 'уже участник'"""
         logger.info(f"🔄 Подписка на {len(SOURCES)} источников...")
+        success_count = 0
 
         for src in SOURCES:
             try:
                 clean_src = src.strip()
 
-                # 1. Приватная ссылка t.me/+...
+                # Приватная ссылка t.me/+hash
                 if clean_src.startswith('https://t.me/+'):
-                    # Извлекаем hash из ссылки
-                    invite_hash = clean_src.split('+')[-1]
-                    result = await self.client(ImportChatInviteRequest(invite_hash))
-                    channel = await self.client.get_entity(result)
-                    logger.info(f"✅ Приватный канал: {getattr(channel, 'title', 'Unknown')}")
+                    invite_hash = clean_src.split('+')[-1].split('/')[0]
 
-                # 2. Публичный username
-                elif '@' in clean_src or clean_src.isalpha() or clean_src.startswith('t.me/'):
-                    clean_username = clean_src.lstrip('@t.me/').strip('/')
+                    try:
+                        # Пробуем импортировать
+                        result = await self.client(ImportChatInviteRequest(invite_hash))
+                        logger.info(f"✅ Новый приватный: {invite_hash}")
+                        success_count += 1
+                    except UserAlreadyParticipantError:
+                        logger.info(f"ℹ️ Уже участник: {invite_hash}")  # ← Не warning!
+                    except Exception as e:
+                        logger.warning(f"⚠️ Приватный {invite_hash}: {e}")
+
+                # Username
+                elif clean_src.startswith('t.me/') or '@' in clean_src or clean_src.isalpha():
+                    clean_username = clean_src.replace('t.me/', '').replace('@', '').strip('/')
                     await self.client(JoinChannelRequest(clean_username))
-                    logger.info(f"✅ Username: {clean_username}")
+                    logger.info(f"✅ Username: @{clean_username}")
+                    success_count += 1
 
-                # 3. ID канала (если уже участник)
+                # ID
                 elif clean_src.startswith('-100'):
                     entity = await self.client.get_entity(int(clean_src))
                     await self.client(JoinChannelRequest(entity))
                     logger.info(f"✅ ID: {clean_src}")
+                    success_count += 1
 
-                await asyncio.sleep(3)  # Пауза против флуда
+                await asyncio.sleep(2)
 
             except Exception as e:
-                logger.warning(f"⚠️ {src}: {e}")
+                logger.debug(f"Пропуск {src}: {e}")  # debug, а не warning
 
-        logger.info("✅ Подписки завершены")
+        logger.info(f"✅ Подписки завершены. Новых: {success_count}")
 
     async def _wait_smart_delay(self):
         """Умная задержка между постами, чтобы не спамить"""

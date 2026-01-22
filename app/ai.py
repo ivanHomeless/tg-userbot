@@ -27,7 +27,7 @@ def rotate_key():
     )
 
 
-def rewrite_text(text, client=None, max_retries=3):
+def rewrite_text(text, client=None, max_retries=6):
     """Рерайт текста с механизмом повторов и ротацией ключей"""
     if not text:
         return ""
