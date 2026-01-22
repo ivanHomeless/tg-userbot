@@ -1,6 +1,6 @@
+import shutil
 import asyncio
 import logging
-import sys
 from pathlib import Path
 
 # Импортируем класс бота из папки app
@@ -9,8 +9,17 @@ from app.bot_logic import TGBot
 
 def init_environment():
     """Создаем структуру папок перед запуском"""
-    for folder in ["data", "logs", "tmp_media"]:
+    for folder in ["data", "logs"]:
         Path(folder).mkdir(exist_ok=True)
+        # Особый подход к папке с медиа
+
+    temp_path = Path("tmp_media")
+    if temp_path.exists():
+        # Удаляем папку со всем содержимым и создаем пустую
+        shutil.rmtree(temp_path)
+
+    temp_path.mkdir(exist_ok=True)
+    logging.info("Временные файлы очищены, структура папок готова.")
 
 
 def setup_logging():
