@@ -1,7 +1,6 @@
 import re
 import logging
 from openai import OpenAI
-from openai.types.chat import ChatCompletionMessageParam # Импорт типа для списка сообщений
 from app.config import OPENROUTER_API_KEY, MODEL
 from app.prompts import SYSTEM_PROMPT  # <-- Добавили импорт
 

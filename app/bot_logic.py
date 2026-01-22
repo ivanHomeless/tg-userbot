@@ -8,7 +8,7 @@ from telethon.tl.functions.channels import JoinChannelRequest
 # Импортируем настройки и вспомогательные функции
 from app.config import API_ID, API_HASH, PHONE, SOURCES, DEST, TEMP_DIR, POST_DELAY, SESSION_NAME
 from app.database import db_init, is_seen, mark_seen
-from app.utils import get_llm_client, rewrite_text
+import ai
 
 logger = logging.getLogger(__name__)
 
@@ -41,42 +41,38 @@ class TGBot:
                 logger.debug(f"Инфо по подписке {src}: {e}")
 
     async def post_album(self, gid):
-        """Сборка и отправка альбома"""
-        await asyncio.sleep(4)  # Увеличили задержку для сбора тяжелых медиа
-
+        await asyncio.sleep(4)
         async with self.post_lock:
             tasks = self.album_cache.get(gid, [])
             raw_text = self.album_text.get(gid, "")
+            if not tasks: return
 
-            if not tasks:
-                return
-
-            logger.info(f"Сборка альбома {gid} ({len(tasks)} файлов)...")
-            # Дожидаемся завершения всех загрузок
             paths = await asyncio.gather(*tasks)
             valid_paths = [p for p in paths if p]
 
-            rewritten = rewrite_text(raw_text) if raw_text else ""
+            # Рерайт делаем один раз здесь
+            rewritten = ai.rewrite_text(raw_text) if raw_text else ""
 
             try:
                 if valid_paths:
                     if len(rewritten) <= 1024:
+                        # Вариант А: Текст влезает в подпись
                         await self.client.send_file(DEST, valid_paths, caption=rewritten)
                     else:
-                        # Если текст > 1024 символов — шлем раздельно
-                        await self.client.send_file(DEST, valid_paths)
-                        await asyncio.sleep(1)
-                        await self.client.send_message(DEST, rewritten)
-                    logger.info(f"✅ Альбом {gid} отправлен.")
+                        # Вариант Б: Текст слишком длинный — шлем раздельно
+                        await self.client.send_file(DEST, valid_paths)  # Сначала медиа
+                        await asyncio.sleep(1.5)  # Пауза, чтобы Telegram не перепутал порядок
+                        await self.client.send_message(DEST, rewritten)  # Потом текст
 
-                # Очистка
-                for p in valid_paths:
-                    Path(p).unlink(missing_ok=True)
+                    logger.info(f"✅ Альбом {gid} отправлен.")
             except Exception as e:
                 logger.error(f"Ошибка при отправке альбома: {e}")
             finally:
+                # Чистим кэш и файлы ВСЕГДА
                 self.album_cache.pop(gid, None)
                 self.album_text.pop(gid, None)
+                for p in valid_paths:
+                    Path(p).unlink(missing_ok=True)
 
     async def save_post(self, text, file_path=None):
         """Отправка одиночного сообщения с задержкой"""
@@ -140,7 +136,7 @@ class TGBot:
         else:
             # Логика одиночных сообщений
             text = (msg.message or "").strip()
-            rewritten = rewrite_text(text) if text else ""
+            rewritten = ai.rewrite_text(text) if text else ""
 
             path = await self.client.download_media(msg, file=TEMP_DIR) if msg.media else None
             await self.save_post(rewritten, path)
