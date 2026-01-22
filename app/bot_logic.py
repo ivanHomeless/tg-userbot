@@ -5,167 +5,172 @@ from pathlib import Path
 from telethon import TelegramClient, events
 from telethon.tl.functions.channels import JoinChannelRequest
 
-# Импортируем настройки и вспомогательные функции
 from app.config import API_ID, API_HASH, PHONE, SOURCES, DEST, TEMP_DIR, POST_DELAY, SESSION_NAME
 from app.database import db_init, is_seen, mark_seen
+from app.utils import split_text
 from app import ai
 
 logger = logging.getLogger(__name__)
 
+# Время тишины, после которого считаем альбом собранным (в секундах)
+ALBUM_SILENCE_TIMEOUT = 3.0
 
 class TGBot:
     def __init__(self):
-        # Инициализируем клиент без await (в конструкторе это запрещено)
-        # Используем путь data/userbot_session
         self.client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
         self.post_lock = asyncio.Lock()
         self.last_post_time = 0.0
-        self.album_cache = {}
-        self.album_text = {}
+
+        # Структура: { group_id: { 'tasks': [Future], 'texts': [], 'timer_task': Task } }
+        self.albums = {}
 
     async def setup(self):
-        """Инициализация базы и AI клиента"""
         db_init()
         Path(TEMP_DIR).mkdir(exist_ok=True)
-        logger.info("Компоненты (DB, AI, MediaDir) готовы.")
+        logger.info("Компоненты готовы.")
 
     async def join_sources(self):
-        """Автоматическая подписка на источники"""
-        logger.info(f"Проверка подписок для {len(SOURCES)} источников...")
         for src in SOURCES:
             try:
-                # Вызываем метод через клиент
                 await self.client(JoinChannelRequest(src))
-                logger.info(f"Подписка на {src} проверена/выполнена.")
             except Exception as e:
-                logger.debug(f"Инфо по подписке {src}: {e}")
+                logger.debug(f"Ошибка подписки {src}: {e}")
 
-    async def post_album(self, gid):
-        # 1. Ждем, пока Telegram дошлет все части альбома
-        await asyncio.sleep(10)
+    async def _wait_smart_delay(self):
+        """Умная задержка между постами, чтобы не спамить"""
+        now = time.time()
+        wait = (self.last_post_time + POST_DELAY) - now
+        if wait > 0:
+            logger.info(f"⏳ Жду {wait:.1f} сек перед отправкой...")
+            await asyncio.sleep(wait)
+
+    async def send_album_final(self, gid):
+        """Отправка альбома: Сначала МЕДИА, потом ТЕКСТ"""
+        try:
+            await asyncio.sleep(ALBUM_SILENCE_TIMEOUT)
+        except asyncio.CancelledError:
+            return
+
+        data = self.albums.pop(gid, None)
+        if not data: return
+
+        logger.info(f"📦 Сборка альбома {gid} завершена. Скачивание...")
+
+        # 1. Скачивание
+        paths = await asyncio.gather(*data['tasks'], return_exceptions=True)
+        valid_paths = [p for p in paths if isinstance(p, str) and Path(p).exists()]
+
+        # 2. Текст
+        full_text = "\n".join([t for t in data['texts'] if t]).strip()
+
+        if not valid_paths and not full_text: return
+
+        # 3. Рерайт
+        rewritten = ai.rewrite_text(full_text) if full_text else ""
 
         async with self.post_lock:
-            # Получаем данные и СРАЗУ удаляем их из кэша, чтобы другие процессы не мешали
-            tasks = self.album_cache.pop(gid, [])
-            raw_text = self.album_text.pop(gid, "")
+            await self._wait_smart_delay()
 
-            if not tasks:
-                return
-
-            logger.info(f"📦 Начинаю сборку альбома {gid} ({len(tasks)} файлов)")
-
-            # 2. Соблюдаем общую задержку между постами
-            wait = (self.last_post_time + POST_DELAY) - time.time()
-            if wait > 0:
-                logger.info(f"⏳ Очередь: ждем {int(wait)} сек...")
-                await asyncio.sleep(wait)
-
-            # 3. Дожидаемся скачивания всех файлов
-            paths = await asyncio.gather(*tasks, return_exceptions=True)
-            valid_paths = [p for p in paths if isinstance(p, str) and Path(p).exists()]
-
-            # 4. Рерайт
-            rewritten = ai.rewrite_text(raw_text) if raw_text else ""
-
-            # 5. Отправка
             try:
                 if valid_paths:
-                    if len(rewritten) <= 1024:
-                        await self.client.send_file(DEST, valid_paths, caption=rewritten)
-                    else:
+                    # --- ВАРИАНТ С МЕДИА ---
+                    if len(rewritten) > 1024:
+                        # 1. Сначала отправляем сам альбом (без текста)
                         await self.client.send_file(DEST, valid_paths)
-                        await asyncio.sleep(2)
-                        await self.client.send_message(DEST, rewritten)
+
+                        # 2. Ждем секунду и отправляем текст отдельным сообщением
+                        if rewritten:
+                            await asyncio.sleep(1.0)
+                            # Если текст огромный (>4096), режем его, иначе ошибка
+                            for chunk in split_text(rewritten):
+                                await self.client.send_message(DEST, chunk)
+                                await asyncio.sleep(0.5)
+                    else:
+                        # Если текст короткий, шлем в подписи (это тоже "сначала фото")
+                        await self.client.send_file(DEST, valid_paths, caption=rewritten)
+
                 elif rewritten:
-                    # Если файлы не скачались, но есть текст - шлем хотя бы текст
-                    await self.client.send_message(DEST, rewritten)
+                    # --- ВАРИАНТ БЕЗ МЕДИА (только текст) ---
+                    for chunk in split_text(rewritten):
+                        await self.client.send_message(DEST, chunk)
+                        await asyncio.sleep(0.5)
 
                 self.last_post_time = time.time()
-                logger.info(f"✅ Альбом {gid} успешно отправлен")
+                logger.info(f"✅ Альбом {gid} отправлен")
+
             except Exception as e:
                 logger.error(f"❌ Ошибка отправки альбома {gid}: {e}")
             finally:
-                # Очистка файлов
                 for p in valid_paths:
                     Path(p).unlink(missing_ok=True)
 
-    async def safe_post(self, text, file_path=None):
-        """Отправка одиночного сообщения с задержкой"""
-        async with self.post_lock:
-            wait = (self.last_post_time + POST_DELAY) - time.time()
-            if wait > 0:
-                await asyncio.sleep(wait)
-
-            try:
-                if file_path:
-                    if len(text) <= 1024:
-                        await self.client.send_file(DEST, file_path, caption=text)
-                    else:
-                        await self.client.send_file(DEST, file_path)
-                        await asyncio.sleep(1)
-                        await self.client.send_message(DEST, text)
-                else:
-                    await self.client.send_message(DEST, text)
-
-                self.last_post_time = time.time()
-                logger.info("✅ Одиночный пост отправлен.")
-            except Exception as e:
-                logger.error(f"Ошибка safe_post: {e}")
-            finally:
-                if file_path:
-                    Path(file_path).unlink(missing_ok=True)
-
     async def process_message(self, event):
-        if not (event.is_channel or event.is_group):
-            return
+        if not (event.is_channel or event.is_group): return
 
-        # Проверка источника
-        chat = await event.get_chat()
-        username = getattr(chat, "username", None)
-        src_id = f"@{username}".lower() if username else str(event.chat_id)
-
-        if not any(s.strip().lower() in src_id for s in SOURCES):
-            return
-
-        # Анти-дубль
-        if is_seen(event.chat_id, event.id):
-            return
-        mark_seen(event.chat_id, event.id)
+        chat_id = event.chat_id
+        if is_seen(chat_id, event.id): return
+        mark_seen(chat_id, event.id)
 
         msg = event.message
         gid = msg.grouped_id
+        text = (msg.message or "").strip()
+
+        # Запускаем скачивание сразу
+        dl_task = asyncio.create_task(self.client.download_media(msg, file=TEMP_DIR))
 
         if gid:
-            # Важно: создаем корутину скачивания, но не ждем её здесь!
-            coro = self.client.download_media(msg, file=TEMP_DIR)
+            # Логика альбома (Debounce)
+            if gid not in self.albums:
+                self.albums[gid] = {'tasks': [], 'texts': [], 'timer_task': None}
 
-            if gid not in self.album_cache:
-                self.album_cache[gid] = [coro]
-                self.album_text[gid] = (msg.message or "").strip()
-                # Запускаем фоновую задачу на сборку
-                asyncio.create_task(self.post_album(gid))
-            else:
-                self.album_cache[gid].append(coro)
-                if not self.album_text[gid] and msg.message:
-                    self.album_text[gid] = msg.message.strip()
+            self.albums[gid]['tasks'].append(dl_task)
+            if text:
+                self.albums[gid]['texts'].append(text)
+
+            if self.albums[gid]['timer_task']:
+                self.albums[gid]['timer_task'].cancel()
+
+            self.albums[gid]['timer_task'] = asyncio.create_task(self.send_album_final(gid))
+
         else:
-            # Одиночный пост
-            path = await self.client.download_media(msg, file=TEMP_DIR) if msg.media else None
-            text = (msg.message or "").strip()
+            # Одиночное сообщение
+            path = await dl_task if msg.media else None
             rewritten = ai.rewrite_text(text) if text else ""
-            await self.safe_post(rewritten, path)
+
+            async with self.post_lock:
+                await self._wait_smart_delay()
+                try:
+                    if path:
+                        # --- Сначала ФОТО/ВИДЕО ---
+                        if len(rewritten) > 1024:
+                            await self.client.send_file(DEST, path)
+
+                            # --- Потом ТЕКСТ ---
+                            if rewritten:
+                                await asyncio.sleep(1.0)
+                                for chunk in split_text(rewritten):
+                                    await self.client.send_message(DEST, chunk)
+                                    await asyncio.sleep(0.5)
+                        else:
+                            await self.client.send_file(DEST, path, caption=rewritten)
+                    elif rewritten:
+                        for chunk in split_text(rewritten):
+                            await self.client.send_message(DEST, chunk)
+                            await asyncio.sleep(0.5)
+
+                    self.last_post_time = time.time()
+                except Exception as e:
+                    logger.error(f"Ошибка одиночного поста: {e}")
+                finally:
+                    if path: Path(path).unlink(missing_ok=True)
 
     async def run(self):
-        """Основной цикл запуска"""
-        logger.info("Запуск Telegram сессии...")
-        # Метод .start() сам управляет подключением и авторизацией
+        logger.info("Запуск...")
         await self.client.start(phone=PHONE)
-
         await self.setup()
         await self.join_sources()
 
-        # Регистрация обработчика
-        self.client.add_event_handler(self.process_message, events.NewMessage)
+        self.client.add_event_handler(self.process_message, events.NewMessage(chats=SOURCES))
 
-        print("Бот успешно запущен. Нажмите Ctrl+C для остановки.")
+        print("Бот работает...")
         await self.client.run_until_disconnected()
