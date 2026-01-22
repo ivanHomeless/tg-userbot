@@ -1,4 +1,5 @@
 # Секретные данные
+data/
 .env
 *.session
 *.session-journal
@@ -28,6 +29,7 @@ __pycache__/
 *$py.class
 
 # Логи
+logs/
 *.log
 
 # Системные файлы
@@ -37,3 +39,8 @@ Thumbs.db
 
 #IDE
 .idea
+
+
+
+
+

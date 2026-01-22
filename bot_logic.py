@@ -6,7 +6,7 @@ from telethon import TelegramClient, events
 from telethon.tl.functions.channels import JoinChannelRequest
 
 # Импортируем настройки и вспомогательные функции
-from config import API_ID, API_HASH, PHONE, SOURCES, DEST, TEMP_DIR, POST_DELAY
+from config import API_ID, API_HASH, PHONE, SOURCES, DEST, TEMP_DIR, POST_DELAY, SESSION_NAME
 from database import db_init, is_seen, mark_seen
 from utils import get_llm_client, rewrite_text
 
@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 class TGBot:
     def __init__(self):
         # Инициализируем клиент без await (в конструкторе это запрещено)
-        self.client = TelegramClient("userbot_session", API_ID, API_HASH)
+        # Используем путь data/userbot_session
+        self.client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
         self.llm = None
         self.post_lock = asyncio.Lock()
         self.last_post_time = 0.0

@@ -15,6 +15,9 @@ DEST = "@vokopetestdest"
 MODEL = "tngtech/deepseek-r1t2-chimera:free"
 POST_DELAY = 2.0
 
-# Пути
-DB_PATH = "seen.sqlite3"
+# Пути к базам и сессиям
+DB_PATH = "data/seen.sqlite3"
+SESSION_NAME = "data/userbot_session"  # Telethon сам добавит .session
+
+# Пути к медиа
 TEMP_DIR = "tmp_media"
