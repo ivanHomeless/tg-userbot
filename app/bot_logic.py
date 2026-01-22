@@ -41,38 +41,52 @@ class TGBot:
                 logger.debug(f"Инфо по подписке {src}: {e}")
 
     async def post_album(self, gid):
-        await asyncio.sleep(4)
+        # Увеличиваем ожидание, чтобы точно собрать все части тяжелого поста
+        await asyncio.sleep(10)
+
         async with self.post_lock:
             tasks = self.album_cache.get(gid, [])
             raw_text = self.album_text.get(gid, "")
-            if not tasks: return
 
-            paths = await asyncio.gather(*tasks)
-            valid_paths = [p for p in paths if p]
+            if not tasks:
+                return
 
-            # Рерайт делаем один раз здесь
+            # Скачиваем файлы
+            paths = await asyncio.gather(*tasks, return_exceptions=True)
+            valid_paths = [p for p in paths if isinstance(p, str) and Path(p).exists()]
+
+            # Делаем рерайт
             rewritten = ai.rewrite_text(raw_text) if raw_text else ""
 
+            # 1. Сначала пробуем отправить медиа
+            media_sent = False
             try:
                 if valid_paths:
                     if len(rewritten) <= 1024:
-                        # Вариант А: Текст влезает в подпись
                         await self.client.send_file(DEST, valid_paths, caption=rewritten)
+                        media_sent = True
                     else:
-                        # Вариант Б: Текст слишком длинный — шлем раздельно
-                        await self.client.send_file(DEST, valid_paths)  # Сначала медиа
-                        await asyncio.sleep(1.5)  # Пауза, чтобы Telegram не перепутал порядок
-                        await self.client.send_message(DEST, rewritten)  # Потом текст
-
-                    logger.info(f"✅ Альбом {gid} отправлен.")
+                        await self.client.send_file(DEST, valid_paths)
+                        media_sent = True
+                        await asyncio.sleep(2)  # Пауза перед текстом
             except Exception as e:
-                logger.error(f"Ошибка при отправке альбома: {e}")
+                logger.error(f" Ошибка при отправке медиа в альбоме {gid}: {e}")
+
+            # 2. Если текст длинный ИЛИ медиа не отправились, но текст есть — шлем его отдельно
+            try:
+                if rewritten and (len(rewritten) > 1024 or not media_sent):
+                    await self.client.send_message(DEST, rewritten)
+                    logger.info(f" Текст для альбома {gid} отправлен отдельным постом")
+            except Exception as e:
+                logger.error(f" Ошибка при отправке текста альбома {gid}: {e}")
+
+            # 3. Очистка
             finally:
-                # Чистим кэш и файлы ВСЕГДА
                 self.album_cache.pop(gid, None)
                 self.album_text.pop(gid, None)
                 for p in valid_paths:
                     Path(p).unlink(missing_ok=True)
+                logger.info(f" Завершена обработка альбома {gid}")
 
     async def safe_post(self, text, file_path=None):
         """Отправка одиночного сообщения с задержкой"""

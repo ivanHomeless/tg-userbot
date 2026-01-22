@@ -33,8 +33,8 @@ def rewrite_text(text, client=None, max_retries=3):
         return ""
     # Указываем тип переменной явно
     messages = [
-        {"role": "system", "content": str(SYSTEM_PROMPT)},
-        {"role": "user", "content": str(text)}
+        {"role": "system", "content": ""},
+        {"role": "user", "content": "Напиши крипипасту больше 1024 символов"}
     ]
     attempt = 0
     base_delay = 2  # Начальная задержка в секундах
