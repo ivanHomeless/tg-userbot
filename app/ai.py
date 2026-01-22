@@ -31,10 +31,10 @@ def rewrite_text(text, client=None, max_retries=3):
     """Рерайт текста с механизмом повторов и ротацией ключей"""
     if not text:
         return ""
-        # Указываем тип переменной явно
+    # Указываем тип переменной явно
     messages = [
-        {"role": "system", "content": ""},
-        {"role": "user", "content": "Напиши заметку про музыку длиннее 1024 символов"}
+        {"role": "system", "content": str(SYSTEM_PROMPT)},
+        {"role": "user", "content": str(text)}
     ]
     attempt = 0
     base_delay = 2  # Начальная задержка в секундах
