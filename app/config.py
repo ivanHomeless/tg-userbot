@@ -3,21 +3,23 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Секреты
-API_ID = int(os.getenv("API_ID", 0))
-API_HASH = os.getenv("API_HASH", "")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-PHONE = os.getenv("PHONE", "")
+# API Telegram
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+PHONE = os.getenv("PHONE")
 
-# Настройки бота
-SOURCES = ["@vokop_test", "@bots_paty", "@cvo_yarmarka_chat", "@kapyushon_kupol_svo"]
-DEST = "@vokopetestdest"
-MODEL = "tngtech/deepseek-r1t2-chimera:free" # xiaomi/mimo-v2-flash:free
-POST_DELAY = 2.0
+# Настройки каналов (читаем из .env)
+# .split(",") превращает строку в список, а .strip() убирает случайные пробелы
+SOURCES_RAW = os.getenv("SOURCES", "")
+SOURCES = [s.strip() for s in SOURCES_RAW.split(",") if s.strip()]
 
-# Пути к базам и сессиям
-DB_PATH = "data/seen.sqlite3"
-SESSION_NAME = "data/userbot_session"  # Telethon сам добавит .session
+DEST = os.getenv("DEST")
 
-# Пути к медиа
+# AI настройки
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+MODEL = os.getenv("MODEL", "tngtech/deepseek-r1t2-chimera:free")
+
+# Прочие настройки
+SESSION_NAME = "data/userbot_session"
 TEMP_DIR = "tmp_media"
+POST_DELAY = 600  # 10 минут
