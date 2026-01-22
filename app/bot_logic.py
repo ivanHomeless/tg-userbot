@@ -30,11 +30,30 @@ class TGBot:
         logger.info("Компоненты готовы.")
 
     async def join_sources(self):
+        """Подписка на источники (поддержка ID + username)"""
+        logger.info(f"🔄 Подписка на {len(SOURCES)} источников...")
+
         for src in SOURCES:
             try:
-                await self.client(JoinChannelRequest(src))
+                # 1. Если это username (с @ или без) — подписываемся напрямую
+                clean_src = src.strip().lstrip('@')
+                if clean_src.startswith('username') or clean_src.isalpha():
+                    await self.client(JoinChannelRequest(clean_src))
+                    logger.info(f"✅ Username {clean_src}")
+
+                # 2. Если это ID канала (начинается с -100) — используем resolve_peer
+                elif clean_src.startswith('-100'):
+                    entity = await self.client.get_entity(int(clean_src))
+                    await self.client(JoinChannelRequest(entity))
+                    logger.info(f"✅ ID канал {clean_src}")
+
+                # Пауза против флуда
+                await asyncio.sleep(2)
+
             except Exception as e:
-                logger.debug(f"Ошибка подписки {src}: {e}")
+                logger.warning(f"⚠️ Не удалось подписаться на {src}: {e}")
+
+        logger.info("✅ Подписки завершены")
 
     async def _wait_smart_delay(self):
         """Умная задержка между постами, чтобы не спамить"""
