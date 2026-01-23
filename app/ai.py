@@ -33,7 +33,7 @@ def rewrite_text(text, client=None, max_retries=6):
         return ""
     # Указываем тип переменной явно
     messages = [
-        {"role": "system", "content": str(SYSTEM_PROMPT)},
+        {"role": "system", "content": "str(SYSTEM_PROMPT) Напиши крипи историю на основе сообщения пользователя размером от 1024 до 1600 символов"},
         {"role": "user", "content": str(text)}
     ]
     attempt = 0
