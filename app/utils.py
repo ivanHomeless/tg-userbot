@@ -1,7 +1,8 @@
+import logging
+
 from pathlib import Path
 from app.config import LINKS_FILE
 
-from app.bot_logic import logger
 
 def split_text(text, limit=4096):
     """Режет текст на куски по 4096 символов"""
@@ -67,4 +68,4 @@ def remove_link_from_file(link_to_remove, file_path=LINKS_FILE):
     if len(new_lines) < len(lines):
         with open(file_path, "w", encoding="utf-8") as f:
             f.writelines(new_lines)
-        logger.info(f"🗑️ Ссылка удалена из списка задач: {link_to_remove}")
+        logging.info(f"🗑️ Ссылка удалена из списка задач: {link_to_remove}")
