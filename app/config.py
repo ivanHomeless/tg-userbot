@@ -12,18 +12,21 @@ from pathlib import Path
 
 # Пути к файлам
 IDS_FILE = Path("data/sources_ids.txt")
-LINKS_FILE = Path("data/source_links.txt")
+LINKS_FILE = Path("data/sources_links.txt")
 
 
 def load_sources():
     """Загружает ID (активные) и Ссылки (новые задачи)"""
 
-    # 1. Загружаем проверенные ID (из них мы просто читаем посты)
-    ids = []
+    # 1. Загружаем проверенные ID как set из int
+    ids = set()
     if IDS_FILE.exists():
         with open(IDS_FILE, "r", encoding="utf-8") as f:
-            # Читаем, убираем пробелы, берем только непустые строки
-            ids = [line.strip() for line in f if line.strip()]
+            for line in f:
+                line = line.strip()
+                # Проверяем, что это число (поддержка отрицательных ID)
+                if line and line.lstrip('-').isdigit():
+                    ids.add(int(line))
 
     # 2. Загружаем ссылки для вступления (задачи на вход)
     links = []
@@ -36,9 +39,6 @@ def load_sources():
 
 # Инициализируем списки
 SOURCES_IDS, SOURCES_LINKS = load_sources()
-
-# Для обратной совместимости с остальным кодом (если нужно)
-SOURCES = SOURCES_IDS + SOURCES_LINKS
 
 DEST = os.getenv("DEST")
 
