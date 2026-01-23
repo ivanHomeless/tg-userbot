@@ -50,6 +50,7 @@ class TGBot:
                             logger.info(f"✅ Вступил в приватный: {entity.title} (ID: {entity.id})")
                     except UserAlreadyParticipantError:
                         entity = await self.client.get_entity(src)
+                        remove_link_from_file(src)
                         logger.info(f"ℹ️ Уже в чате: {entity.title} (ID: {entity.id})")
 
                 else:
