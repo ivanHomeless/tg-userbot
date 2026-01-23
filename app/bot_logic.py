@@ -42,7 +42,6 @@ class TGBot:
 
                 if '+' in src or 'joinchat' in src:
                     invite_hash = src.split('/')[-1].replace('+', '')
-                    remove_link_from_file(src)
                     try:
                         updates = await self.client(ImportChatInviteRequest(invite_hash))
                         if updates.chats:
@@ -50,9 +49,7 @@ class TGBot:
                             logger.info(f"✅ Вступил в приватный: {entity.title} (ID: {entity.id})")
                     except UserAlreadyParticipantError:
                         entity = await self.client.get_entity(src)
-                        remove_link_from_file(src)
                         logger.info(f"ℹ️ Уже в чате: {entity.title} (ID: {entity.id})")
-
                 else:
                     entity = await self.client.get_entity(src)
                     await self.client(JoinChannelRequest(entity))
@@ -60,6 +57,7 @@ class TGBot:
 
                 if entity:
                     save_source_id(entity.id)
+                    remove_link_from_file(src)
                 await asyncio.sleep(2)
             except FloodWaitError as e:
                 logger.warning(f"⏳ Слишком много запросов! Ждем {e.seconds} сек...")
