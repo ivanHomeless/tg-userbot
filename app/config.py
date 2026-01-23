@@ -8,10 +8,37 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 PHONE = os.getenv("PHONE")
 
-# Настройки каналов (читаем из .env)
-# .split(",") превращает строку в список, а .strip() убирает случайные пробелы
-SOURCES_RAW = os.getenv("SOURCES", "")
-SOURCES = [s.strip() for s in SOURCES_RAW.split(",") if s.strip()]
+from pathlib import Path
+
+# Пути к файлам
+IDS_FILE = Path("data/sources_ids.txt")
+LINKS_FILE = Path("data/source_links.txt")
+
+
+def load_sources():
+    """Загружает ID (активные) и Ссылки (новые задачи)"""
+
+    # 1. Загружаем проверенные ID (из них мы просто читаем посты)
+    ids = []
+    if IDS_FILE.exists():
+        with open(IDS_FILE, "r", encoding="utf-8") as f:
+            # Читаем, убираем пробелы, берем только непустые строки
+            ids = [line.strip() for line in f if line.strip()]
+
+    # 2. Загружаем ссылки для вступления (задачи на вход)
+    links = []
+    if LINKS_FILE.exists():
+        with open(LINKS_FILE, "r", encoding="utf-8") as f:
+            links = [line.strip() for line in f if line.strip()]
+
+    return ids, links
+
+
+# Инициализируем списки
+SOURCES_IDS, SOURCES_LINKS = load_sources()
+
+# Для обратной совместимости с остальным кодом (если нужно)
+SOURCES = SOURCES_IDS + SOURCES_LINKS
 
 DEST = os.getenv("DEST")
 

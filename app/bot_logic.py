@@ -2,91 +2,83 @@ import asyncio
 import time
 import logging
 from pathlib import Path
+
+from telethon.errors import FloodWaitError
 from telethon import TelegramClient, events
-from telethon.tl.types import Channel
+from telethon.errors import UserAlreadyParticipantError
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
-from telethon.errors import UserAlreadyParticipantError
 
-from app.config import API_ID, API_HASH, PHONE, SOURCES, DEST, TEMP_DIR, POST_DELAY, SESSION_NAME
+from app.config import API_ID, API_HASH, PHONE, SOURCES, SOURCES_LINKS, SOURCES_IDS, DEST, TEMP_DIR, POST_DELAY, SESSION_NAME
 from app.database import db_init, is_seen, mark_seen
-from app.utils import split_text
+from app.utils import split_text, save_source_id
 from app import ai
-
 
 logger = logging.getLogger(__name__)
 
-# Время тишины, после которого считаем альбом собранным (в секундах)
 ALBUM_SILENCE_TIMEOUT = 3.0
+
 
 class TGBot:
     def __init__(self):
         self.client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
         self.post_lock = asyncio.Lock()
         self.last_post_time = 0.0
-
-        # Структура: { group_id: { 'tasks': [Future], 'texts': [], 'timer_task': Task } }
         self.albums = {}
 
     async def setup(self):
         db_init()
         Path(TEMP_DIR).mkdir(exist_ok=True)
-        logger.info("Компоненты готовы.")
+        print("✅ База и папки готовы.")
 
     async def join_sources(self):
-        """Подписка с обработкой 'уже участник'"""
-        logger.info(f"🔄 Подписка на {len(SOURCES)} источников...")
-        success_count = 0
-
-        for src in SOURCES:
+        """Универсальное вступление в каналы"""
+        print(f"🔄 Проверка подписок ({len(SOURCES_LINKS)} источников)...")
+        for src in SOURCES_LINKS:
             try:
-                clean_src = src.strip()
+                src = src.strip()
+                entity = None  # Сюда сохраним объект чата
 
-                # Приватная ссылка t.me/+hash
-                if clean_src.startswith('https://t.me/+'):
-                    invite_hash = clean_src.split('+')[-1].split('/')[0]
-
+                if '+' in src or 'joinchat' in src:
+                    invite_hash = src.split('/')[-1].replace('+', '')
                     try:
-                        # Пробуем импортировать
-                        result = await self.client(ImportChatInviteRequest(invite_hash))
-                        logger.info(f"✅ Новый приватный: {invite_hash}")
-                        success_count += 1
+                        # Метод возвращает объект Updates, где в .chats лежит список чатов
+                        updates = await self.client(ImportChatInviteRequest(invite_hash))
+                        if updates.chats:
+                            entity = updates.chats[0]
+                            print(f"✅ Вступил в приватный: {entity.title} (ID: {entity.id})")
                     except UserAlreadyParticipantError:
-                        logger.info(f"ℹ️ Уже участник: {invite_hash}")  # ← Не warning!
-                    except Exception as e:
-                        logger.warning(f"⚠️ Приватный {invite_hash}: {e}")
+                        # Если уже участник, просто запрашиваем информацию о чате
+                        entity = await self.client.get_entity(src)
+                        print(f"ℹ️ Уже в чате: {entity.title} (ID: {entity.id})")
 
-                # Username
-                elif clean_src.startswith('t.me/') or '@' in clean_src or clean_src.isalpha():
-                    clean_username = clean_src.replace('t.me/', '').replace('@', '').strip('/')
-                    await self.client(JoinChannelRequest(clean_username))
-                    logger.info(f"✅ Username: @{clean_username}")
-                    success_count += 1
+                # Если получили entity — записываем ID в файл
+                if entity:
+                    save_source_id(entity.id)
 
-                # ID
-                elif clean_src.startswith('-100'):
-                    entity = await self.client.get_entity(int(clean_src))
+                # 2. Публичные каналы (по ID, username или ссылке)
+                else:
+                    entity = await self.client.get_entity(src)
                     await self.client(JoinChannelRequest(entity))
-                    logger.info(f"✅ ID: {clean_src}")
-                    success_count += 1
+                    print(f"✅ Подписан на: {src}")
 
-                await asyncio.sleep(2)
-
+                await asyncio.sleep(2)  # Анти-спам задержка
+            except FloodWaitError as e:
+                logger.warning(f"⏳ Слишком много запросов! Ждем {e.seconds} сек...")
+                await asyncio.sleep(e.seconds)
+                # После ожидания можно попробовать вступить снова или просто продолжить цикл
             except Exception as e:
-                logger.debug(f"Пропуск {src}: {e}")  # debug, а не warning
-
-        logger.info(f"✅ Подписки завершены. Новых: {success_count}")
+                logger.error(f"⚠️ Ошибка {src}: {e}")
 
     async def _wait_smart_delay(self):
-        """Умная задержка между постами, чтобы не спамить"""
         now = time.time()
         wait = (self.last_post_time + POST_DELAY) - now
         if wait > 0:
-            logger.info(f"⏳ Жду {wait:.1f} сек перед отправкой...")
+            print(f"⏳ Пауза перед постом: {int(wait)}с")
             await asyncio.sleep(wait)
 
     async def send_album_final(self, gid):
-        """Отправка альбома: Сначала МЕДИА, потом ТЕКСТ"""
+        """Сборка и отправка медиа-группы"""
         try:
             await asyncio.sleep(ALBUM_SILENCE_TIMEOUT)
         except asyncio.CancelledError:
@@ -95,55 +87,39 @@ class TGBot:
         data = self.albums.pop(gid, None)
         if not data: return
 
-        logger.info(f"📦 Сборка альбома {gid} завершена. Скачивание...")
-
-        # 1. Скачивание
+        # Скачиваем файлы
         paths = await asyncio.gather(*data['tasks'], return_exceptions=True)
         valid_paths = [p for p in paths if isinstance(p, str) and Path(p).exists()]
 
-        # 2. Текст
         full_text = "\n".join([t for t in data['texts'] if t]).strip()
-
-        if not valid_paths and not full_text: return
-
-        # 3. Рерайт
         rewritten = ai.rewrite_text(full_text) if full_text else ""
 
         async with self.post_lock:
             await self._wait_smart_delay()
+            await self._send_to_dest(valid_paths, rewritten)
+            self.last_post_time = time.time()
 
-            try:
-                if valid_paths:
-                    # --- ВАРИАНТ С МЕДИА ---
-                    if len(rewritten) > 1024:
-                        # 1. Сначала отправляем сам альбом (без текста)
-                        await self.client.send_file(DEST, valid_paths)
+        for p in valid_paths: Path(p).unlink(missing_ok=True)
 
-                        # 2. Ждем секунду и отправляем текст отдельным сообщением
-                        if rewritten:
-                            await asyncio.sleep(1.0)
-                            # Если текст огромный (>4096), режем его, иначе ошибка
-                            for chunk in split_text(rewritten):
-                                await self.client.send_message(DEST, chunk)
-                                await asyncio.sleep(0.5)
-                    else:
-                        # Если текст короткий, шлем в подписи (это тоже "сначала фото")
-                        await self.client.send_file(DEST, valid_paths, caption=rewritten)
-
-                elif rewritten:
-                    # --- ВАРИАНТ БЕЗ МЕДИА (только текст) ---
-                    for chunk in split_text(rewritten):
+    async def _send_to_dest(self, paths, text):
+        """Логика отправки: сначала медиа, потом текст (если длинный)"""
+        try:
+            if paths:
+                if len(text) > 1024:
+                    # Сначала альбом, потом текст отдельно
+                    await self.client.send_file(DEST, paths)
+                    await asyncio.sleep(1)
+                    for chunk in split_text(text):
                         await self.client.send_message(DEST, chunk)
-                        await asyncio.sleep(0.5)
-
-                self.last_post_time = time.time()
-                logger.info(f"✅ Альбом {gid} отправлен")
-
-            except Exception as e:
-                logger.error(f"❌ Ошибка отправки альбома {gid}: {e}")
-            finally:
-                for p in valid_paths:
-                    Path(p).unlink(missing_ok=True)
+                else:
+                    # Текст влезает в описание
+                    await self.client.send_file(DEST, paths, caption=text)
+            elif text:
+                # Только текст
+                for chunk in split_text(text):
+                    await self.client.send_message(DEST, chunk)
+        except Exception as e:
+            logger.error(f"❌ Ошибка при отправке в DEST: {e}")
 
     async def process_message(self, event):
         if not (event.is_channel or event.is_group):
@@ -185,13 +161,16 @@ class TGBot:
 
         else:
             # Одиночное сообщение
-            path = await dl_task if msg.media else None
+            # ⚠️ СНАЧАЛА ЖДЕМ ЗАГРУЗКУ МЕДИА
+            path = await dl_task
+
+            # ✅ ТОЛЬКО ПОТОМ рерайтим текст
             rewritten = ai.rewrite_text(text) if text else ""
 
             async with self.post_lock:
                 await self._wait_smart_delay()
                 try:
-                    if path:
+                    if path and Path(path).exists():  # Проверяем существование
                         # --- Сначала ФОТО/ВИДЕО ---
                         if len(rewritten) > 1024:
                             await self.client.send_file(DEST, path)
@@ -217,12 +196,9 @@ class TGBot:
                         Path(path).unlink(missing_ok=True)
 
     async def run(self):
-        logger.info("Запуск...")
         await self.client.start(phone=PHONE)
         await self.setup()
         await self.join_sources()
-
         self.client.add_event_handler(self.process_message, events.NewMessage())
-
-        print("Бот работает...")
+        print("🚀 Бот запущен и слушает каналы...")
         await self.client.run_until_disconnected()
