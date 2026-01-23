@@ -1,5 +1,5 @@
 from pathlib import Path
-from config import LINKS_FILE
+from app.config import LINKS_FILE
 
 from app.bot_logic import logger
 
