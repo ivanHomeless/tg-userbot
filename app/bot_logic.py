@@ -63,6 +63,7 @@ class TGBot:
                 logger.warning(f"⏳ Слишком много запросов! Ждем {e.seconds} сек...")
                 await asyncio.sleep(e.seconds)
             except Exception as e:
+                remove_link_from_file(src)
                 logger.error(f"⚠️ Ошибка {src}: {e}")
 
     async def _wait_smart_delay(self):
