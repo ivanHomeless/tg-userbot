@@ -21,7 +21,7 @@ ALBUM_SILENCE_TIMEOUT = 3.0
 
 class TGBot:
     def __init__(self):
-        self.client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
+        self.client = TelegramClient(SESSION_NAME, API_ID, API_HASH, sequential_updates=True)
         self.post_lock = asyncio.Lock()
         self.last_post_time = 0.0
         self.albums = {}
