@@ -74,158 +74,101 @@ class TGBot:
             logger.info(f"⏳ Пауза перед постом: {int(wait)}с")
             await asyncio.sleep(wait)
 
-    async def _send_to_dest(self, paths, text):
-        """Унифицированная отправка медиа и текста"""
+    async def _send_to_dest(self, media_messages, text):
+        """Отправка медиа (через объекты Message) и текста без скачивания"""
         try:
-            if paths:
-                if len(text) > 1024:
-                    # Отправляем медиа и проверяем результат
-                    media_result = await self.client.send_file(DEST, paths)
+            # Очищаем список от пустых объектов
+            valid_media = [m for m in (media_messages or []) if m and getattr(m, "media", None)]
 
-                    # Универсальная проверка (для одного файла и для альбома)
-                    messages = media_result if isinstance(media_result, list) else [media_result]
-                    uploaded = [msg for msg in messages if msg and msg.media]
+            if valid_media:
+                # 1. Отправляем медиа
+                # Если текст длинный, caption=None, если короткий - сразу с текстом
+                caption_to_send = text if text and len(text) <= 1024 else None
+                result = await self.client.send_file(DEST, valid_media, caption=caption_to_send)
+                
+                # Быстрая проверка ответа сервера
+                sent_msgs = result if isinstance(result, list) else [result]
+                is_success = any(m and m.media for m in sent_msgs)
 
-                    logger.info(f"✅ Медиа загружено: {len(uploaded)}/{len(messages)} файлов")
-
-                    # Отправляем текст только если медиа загрузилось
-                    if uploaded and text:
-                        # Минимальная задержка для гарантии обработки сервером
-                        await asyncio.sleep(10)
-
+                if is_success:
+                    logger.info(f"✅ Медиа доставлено (объектов: {len(sent_msgs)})")
+                    # 2. Если текст длинный — шлем его после успешного медиа
+                    if text and len(text) > 1024:
+                        await asyncio.sleep(0.5)
                         chunks = list(split_text(text))
-                        logger.info(f"📝 Отправка текста: {len(chunks)} чанк(ов)")
-
                         for chunk in chunks:
                             await self.client.send_message(DEST, chunk)
                             await asyncio.sleep(0.3)
-                    elif not uploaded:
-                        logger.error("❌ Медиа не загрузилось, текст не отправлен")
                 else:
-                    # Медиа с caption (текст <= 1024)
-                    await self.client.send_file(DEST, paths, caption=text or None)
-                    logger.info(f"✅ Медиа+caption отправлено")
+                    logger.error("❌ Сервер не подтвердил доставку медиа")
+
             elif text:
                 # Только текст без медиа
                 chunks = list(split_text(text))
-                logger.info(f"📝 Отправка только текста: {len(chunks)} чанк(ов)")
                 for chunk in chunks:
                     await self.client.send_message(DEST, chunk)
                     await asyncio.sleep(0.3)
+                    
         except Exception as e:
             logger.error(f"❌ Ошибка при отправке в DEST: {e}", exc_info=True)
-            raise  # Пробрасываем ошибку выше
+            raise
 
     async def send_album(self, gid):
         """Сборка и отправка медиа-группы"""
         try:
             await asyncio.sleep(ALBUM_SILENCE_TIMEOUT)
         except asyncio.CancelledError:
-            logger.debug(f"Альбом {gid}: таймер отменен")
             return
 
         data = self.albums.pop(gid, None)
-        if not data:
-            logger.warning(f"Альбом {gid}: данные не найдены")
-            return
+        if not data: return
 
-        # Дожидаемся загрузки всех файлов
-        paths = await asyncio.gather(*data['tasks'], return_exceptions=True)
-
-        # Фильтруем валидные пути и логируем ошибки
-        valid_paths = []
-        for i, p in enumerate(paths, 1):
-            if isinstance(p, Exception):
-                logger.error(f"❌ Альбом {gid}: ошибка загрузки файла {i}: {p}")
-            elif isinstance(p, str) and p and Path(p).exists():
-                valid_paths.append(p)
-            elif p:
-                logger.warning(f"⚠️ Альбом {gid}: файл {i} не существует: {p}")
-
-        # Проверяем что есть хоть что-то
-        if not valid_paths:
-            logger.warning(f"⚠️ Альбом {gid}: нет валидных файлов, пропускаем")
-            return
-
-        logger.info(f"📦 Альбом {gid}: {len(valid_paths)}/{len(paths)} файлов готовы")
-
+        media_messages = [m for m in data.get('messages', []) if m and getattr(m, "media", None)]
         full_text = "\n".join([t for t in data['texts'] if t]).strip()
         rewritten = ai.rewrite_text(full_text) if full_text else ""
 
         async with self.post_lock:
             await self._wait_smart_delay()
             try:
-                await self._send_to_dest(valid_paths, rewritten)
+                await self._send_to_dest(media_messages, rewritten)
                 self.last_post_time = time.time()
             except Exception as e:
                 logger.error(f"❌ Альбом {gid}: ошибка при отправке: {e}")
 
-        # Безопасное удаление файлов
-        for p in valid_paths:
-            try:
-                Path(p).unlink(missing_ok=True)
-            except Exception as e:
-                logger.error(f"❌ Не удалось удалить {p}: {e}")
-
     async def process_message(self, event):
         """Обработка входящих сообщений"""
         chat_id = event.chat_id
+        if chat_id not in SOURCES_IDS: return
 
-        # Быстрая проверка по нормализованным ID
-        if chat_id not in SOURCES_IDS:
-            return
-
-        if is_seen(chat_id, event.id):
-            return
+        if is_seen(chat_id, event.id): return
         mark_seen(chat_id, event.id)
 
         msg = event.message
         gid = msg.grouped_id
         text = (msg.message or "").strip()
 
-        # Запускаем загрузку медиа асинхронно
-        dl_task = asyncio.create_task(self.client.download_media(msg, file=TEMP_DIR))
-
         if gid:
-            # Альбом (Debounce)
             if gid not in self.albums:
-                self.albums[gid] = {'tasks': [], 'texts': [], 'timer_task': None}
+                self.albums[gid] = {'messages': [], 'texts': [], 'timer_task': None}
 
-            self.albums[gid]['tasks'].append(dl_task)
+            if getattr(msg, "media", None):
+                self.albums[gid]['messages'].append(msg)
             if text:
                 self.albums[gid]['texts'].append(text)
 
-            # Отменяем предыдущий таймер
             if self.albums[gid]['timer_task']:
                 self.albums[gid]['timer_task'].cancel()
-
-            # Запускаем новый таймер
             self.albums[gid]['timer_task'] = asyncio.create_task(self.send_album(gid))
         else:
-            # Одиночное сообщение
-            try:
-                path = await dl_task
-            except Exception as e:
-                logger.error(f"❌ Ошибка загрузки медиа: {e}")
-                path = None
-
             rewritten = ai.rewrite_text(text) if text else ""
-
             async with self.post_lock:
                 await self._wait_smart_delay()
                 try:
-                    paths = [path] if path and Path(path).exists() else []
-                    await self._send_to_dest(paths, rewritten)
+                    media_messages = [msg] if getattr(msg, "media", None) else []
+                    await self._send_to_dest(media_messages, rewritten)
                     self.last_post_time = time.time()
                 except Exception as e:
                     logger.error(f"❌ Ошибка одиночного поста: {e}")
-                finally:
-                    # Удаляем файл в любом случае
-                    if path:
-                        try:
-                            Path(path).unlink(missing_ok=True)
-                        except Exception as e:
-                            logger.error(f"❌ Не удалось удалить {path}: {e}")
 
     async def run(self):
         await self.client.start(phone=PHONE)
