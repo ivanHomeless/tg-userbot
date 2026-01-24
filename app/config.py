@@ -43,8 +43,16 @@ SOURCES_IDS, SOURCES_LINKS = load_sources()
 DEST = os.getenv("DEST")
 
 # AI настройки
+# Провайдер: openrouter | deepseek
+AI_PROVIDER = (os.getenv("AI_PROVIDER", "openrouter") or "openrouter").strip().lower()
+
+# OpenRouter: можно указать несколько ключей через запятую для ротации
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-MODEL = os.getenv("MODEL", "tngtech/deepseek-r1t2-chimera:free")
+OPENROUTER_MODEL = os.getenv("MODEL", "tngtech/deepseek-r1t2-chimera:free")
+
+# DeepSeek: один ключ, без ротации
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 
 # Прочие настройки
 SESSION_NAME = "data/userbot_session"
