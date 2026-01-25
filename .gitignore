@@ -1,46 +1,77 @@
-# Секретные данные
-data/
-.env
-*.session
-*.session-journal
-
-# База данных (чтобы не затереть историю обработанных постов при переносе)
-seen.sqlite3
-userbot_session.session
-userbot_session.session-journal
-
-# Временные файлы и медиа
-tmp_media/
-*.jpg
-*.jpeg
-*.png
-*.mp4
-*.webp
-
-# Виртуальное окружение Python
-venv/
-.venv/
-env/
-ENV/
-
-# Кэш Python
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Telegram сессии
+*.session
+*.session-journal
+data/userbot_session*
+
+# База данных
+*.sqlite3
+*.db
+data/seen.sqlite3
+dataa/
 
 # Логи
 logs/
 *.log
 
-# Системные файлы
+# Временные файлы медиа
+tmp_media/
+temp/
+
+# Конфигурация (КРИТИЧНО! Не коммитить!)
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
 .DS_Store
 Thumbs.db
 
+# Alembic (коммитим миграции, но не лок-файлы)
+alembic/versions/__pycache__/
 
-#IDE
-.idea
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
 
+# Jupyter Notebook
+.ipynb_checkpoints
 
+# pyenv
+.python-version
 
-
-
+# Backup
+*.bak
+*.backup
