@@ -9,7 +9,7 @@ services:
     environment:
       POSTGRES_DB: telegram_bot
       POSTGRES_USER: botuser
-      POSTGRES_PASSWORD: secure_password
+      POSTGRES_PASSWORD: '1NYv7MGwOQ**YZ0$'
       PGDATA: /var/lib/postgresql/data/pgdata
     ports:
       - "5432:5432"
