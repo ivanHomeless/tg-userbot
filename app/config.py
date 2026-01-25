@@ -56,7 +56,7 @@ DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 
 # Google AI Studio (Gemini)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
 
 # Прочие настройки
 SESSION_NAME = "data/userbot_session"
