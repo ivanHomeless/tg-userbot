@@ -1,65 +1,77 @@
 import os
 from dotenv import load_dotenv
+from pathlib import Path
 
 load_dotenv()
 
-# API Telegram
+# ============================================
+# TELEGRAM API
+# ============================================
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 PHONE = os.getenv("PHONE")
+DEST = os.getenv("DEST")
 
-from pathlib import Path
+# ============================================
+# POSTGRESQL
+# ============================================
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql+asyncpg://user:password@localhost:5432/telegram_bot"
+)
 
-# Пути к файлам
+# ============================================
+# ФАЙЛЫ И ПУТИ
+# ============================================
 IDS_FILE = Path("data/sources_ids.txt")
 LINKS_FILE = Path("data/sources_links.txt")
+SESSION_NAME = "data/userbot_session"
+TEMP_DIR = "tmp_media"
 
+# ============================================
+# AI НАСТРОЙКИ
+# ============================================
+AI_PROVIDER = (os.getenv("AI_PROVIDER", "openrouter") or "openrouter").strip().lower()
 
+# OpenRouter
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_MODEL = os.getenv("MODEL", "tngtech/deepseek-r1t2-chimera:free")
+
+# DeepSeek
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+
+# Google Gemini
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
+
+# ============================================
+# НАСТРОЙКИ БОТА
+# ============================================
+POST_DELAY = int(os.getenv("POST_DELAY", 10))  # секунд между постами
+AWAIT_TEXT_TIMEOUT = 10  # секунд ожидания текста после медиа
+MEDIA_ONLY_CAPTION = "По всем вопросам с удовольствием отвечу, для заказа пишите @VES_nn"
+
+# ============================================
+# ЗАГРУЗКА ИСТОЧНИКОВ (для миграции)
+# ============================================
 def load_sources():
-    """Загружает ID (активные) и Ссылки (новые задачи)"""
-
-    # 1. Загружаем проверенные ID как set из int
+    """Загружает ID и ссылки из файлов (для первичной миграции в PostgreSQL)"""
     ids = set()
     if IDS_FILE.exists():
         with open(IDS_FILE, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
-                # Проверяем, что это число (поддержка отрицательных ID)
                 if line and line.lstrip('-').isdigit():
                     ids.add(int(line))
-
-    # 2. Загружаем ссылки для вступления (задачи на вход)
+    
     links = []
     if LINKS_FILE.exists():
         with open(LINKS_FILE, "r", encoding="utf-8") as f:
             links = [line.strip() for line in f if line.strip()]
-
+    
     return ids, links
 
 
-# Инициализируем списки
+# Для обратной совместимости (можно удалить после миграции)
 SOURCES_IDS, SOURCES_LINKS = load_sources()
-
-DEST = os.getenv("DEST")
-
-# AI настройки
-# Провайдер: openrouter | deepseek
-AI_PROVIDER = (os.getenv("AI_PROVIDER", "openrouter") or "openrouter").strip().lower()
-
-# OpenRouter: можно указать несколько ключей через запятую для ротации
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = os.getenv("MODEL", "tngtech/deepseek-r1t2-chimera:free")
-
-# DeepSeek: один ключ, без ротации
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-
-# Google AI Studio (Gemini)
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
-
-# Прочие настройки
-SESSION_NAME = "data/userbot_session"
-DB_PATH = "data/seen.sqlite3"
-TEMP_DIR = "tmp_media"
-POST_DELAY = int(os.getenv("POST_DELAY", 10)) # Можно тоже вынести в .env
