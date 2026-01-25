@@ -54,8 +54,12 @@ OPENROUTER_MODEL = os.getenv("MODEL", "tngtech/deepseek-r1t2-chimera:free")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 
+# Google AI Studio (Gemini)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+
 # Прочие настройки
 SESSION_NAME = "data/userbot_session"
 DB_PATH = "data/seen.sqlite3"
 TEMP_DIR = "tmp_media"
-POST_DELAY = 10 #600  # 10 минут
+POST_DELAY = int(os.getenv("POST_DELAY", 10)) # Можно тоже вынести в .env
