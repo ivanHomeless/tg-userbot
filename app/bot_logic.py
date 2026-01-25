@@ -171,7 +171,7 @@ class TGBot:
 
         msg = event.message
         gid = msg.grouped_id
-        text = (msg.message or msg.caption or "").strip()
+        text = (msg.message or "").strip()
 
         if gid:
             if gid not in self.albums:
