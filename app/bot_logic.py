@@ -1,13 +1,16 @@
-import asyncio
 import time
+import asyncio
 import logging
+
 from pathlib import Path
 
 from telethon.errors import FloodWaitError
 from telethon import TelegramClient, events
+from telethon.tl.types import MessageMediaWebPage
 from telethon.errors import UserAlreadyParticipantError
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
+
 
 from app.config import API_ID, API_HASH, PHONE, SOURCES_LINKS, SOURCES_IDS, DEST, TEMP_DIR, POST_DELAY, SESSION_NAME
 from app.database import db_init, is_seen, mark_seen
@@ -75,24 +78,30 @@ class TGBot:
             await asyncio.sleep(wait)
 
     async def _send_to_dest(self, media_messages, text):
-        """Отправка медиа (через объекты Message) и текста без скачивания"""
+        """Отправка медиа и текста без скачивания с фильтрацией WebPage"""
         try:
-            # Очищаем список от пустых объектов
-            valid_media = [m for m in (media_messages or []) if m and getattr(m, "media", None)]
+            # 1. Фильтруем медиа: оставляем только реальные файлы (фото, видео, доки)
+            # Исключаем MessageMediaWebPage, так как это не файлы, а превью ссылок
+            valid_media = []
+            for m in (media_messages or []):
+                if m and getattr(m, "media", None):
+                    if isinstance(m.media, MessageMediaWebPage):
+                        logger.info("🔗 Найдено превью ссылки (WebPage) — игнорируем как медиафайл")
+                        continue
+                    valid_media.append(m)  # Добавляем сообщение целиком (Telethon сам извлечет файл)
 
             if valid_media:
-                # 1. Отправляем медиа
-                # Если текст длинный, caption=None, если короткий - сразу с текстом
+                # 2. Отправляем медиа
                 caption_to_send = text if text and len(text) <= 1024 else None
                 result = await self.client.send_file(DEST, valid_media, caption=caption_to_send)
-                
+
                 # Быстрая проверка ответа сервера
                 sent_msgs = result if isinstance(result, list) else [result]
-                is_success = any(m and m.media for m in sent_msgs)
+                is_success = any(m and getattr(m, "media", None) for m in sent_msgs)
 
                 if is_success:
                     logger.info(f"✅ Медиа доставлено (объектов: {len(sent_msgs)})")
-                    # 2. Если текст длинный — шлем его после успешного медиа
+                    # 3. Если текст длинный — шлем его после успешного медиа
                     if text and len(text) > 1024:
                         await asyncio.sleep(0.5)
                         chunks = list(split_text(text))
@@ -103,12 +112,13 @@ class TGBot:
                     logger.error("❌ Сервер не подтвердил доставку медиа")
 
             elif text:
-                # Только текст без медиа
+                # Только текст без медиа (сюда попадут и сообщения, где были только ссылки с WebPage)
                 chunks = list(split_text(text))
+                logger.info(f"📝 Отправка текстовых чанков: {len(chunks)}")
                 for chunk in chunks:
                     await self.client.send_message(DEST, chunk)
                     await asyncio.sleep(0.3)
-                    
+
         except Exception as e:
             logger.error(f"❌ Ошибка при отправке в DEST: {e}", exc_info=True)
             raise
