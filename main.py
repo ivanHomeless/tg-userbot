@@ -26,7 +26,7 @@ def init_environment():
 def setup_logging():
     log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.INFO,
         format=log_format,
         handlers=[
             logging.FileHandler("logs/bot_work.log", encoding="utf-8"),
