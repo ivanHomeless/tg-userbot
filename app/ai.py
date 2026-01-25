@@ -1,18 +1,20 @@
 import logging
 import time
 from openai import OpenAI
+from google import genai  # Добавили импорт Google GenAI
 from app.config import (
     AI_PROVIDER,
     OPENROUTER_API_KEY,
     OPENROUTER_MODEL,
     DEEPSEEK_API_KEY,
     DEEPSEEK_MODEL,
+    GEMINI_API_KEY,    # Добавить в config
+    GEMINI_MODEL,      # Добавить в config
 )
 from app.prompts import SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
-# OpenRouter: ключи через запятую, с ротацией
 _OPENROUTER_KEYS = []
 if OPENROUTER_API_KEY:
     _OPENROUTER_KEYS = [k.strip() for k in OPENROUTER_API_KEY.split(",") if k.strip()]
@@ -21,12 +23,16 @@ _openrouter_key_index = 0
 def get_llm_client():
     """Получаем клиента выбранного провайдера"""
     global _openrouter_key_index
-
     provider = (AI_PROVIDER or "openrouter").strip().lower()
+
+    if provider == "google":
+        if not GEMINI_API_KEY:
+            raise RuntimeError("GEMINI_API_KEY is not set")
+        return genai.Client(api_key=GEMINI_API_KEY)
+
     if provider == "deepseek":
         if not DEEPSEEK_API_KEY:
             raise RuntimeError("DEEPSEEK_API_KEY is not set")
-        print('DeepSeek')
         return OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
 
     # default: openrouter
@@ -36,60 +42,66 @@ def get_llm_client():
     return OpenAI(base_url="https://openrouter.ai/api/v1", api_key=key)
 
 def rotate_key():
-    """Переключаемся на следующий ключ в списке (только OpenRouter)"""
     global _openrouter_key_index
     if not _OPENROUTER_KEYS:
         return
-
     _openrouter_key_index = (_openrouter_key_index + 1) % len(_OPENROUTER_KEYS)
     logger.warning(f"🔄 Смена API ключа. Используем ключ №{_openrouter_key_index + 1}")
 
-
-def rewrite_text(text, client=None, max_retries=6):
-    """Рерайт текста с механизмом повторов и ротацией ключей"""
+def rewrite_text(text, max_retries=6):
     if not text:
         return ""
-    # Указываем тип переменной явно
-    messages = [
-        {"role": "system", "content": str(SYSTEM_PROMPT)}, # Напиши крипипасту на основе сообщения пользователя размером от 1024 до 1600 символов"
-        {"role": "user", "content": str(text)}
-    ]
+
     attempt = 0
-    base_delay = 2  # Начальная задержка в секундах
+    base_delay = 2
+    provider = (AI_PROVIDER or "openrouter").strip().lower()
 
     while attempt < max_retries:
         try:
-            # Обновляем клиент при каждой попытке (на случай, если сменили ключ)
-            current_client = get_llm_client()
+            client = get_llm_client()
 
-            provider = (AI_PROVIDER or "openrouter").strip().lower()
-            model = DEEPSEEK_MODEL if provider == "deepseek" else OPENROUTER_MODEL
-            response = current_client.chat.completions.create(
-                model=model,
-                messages=messages,
-                timeout=45  # Чтобы запрос не висел вечно
-            )
-            return response.choices[0].message.content
+            if provider == "google":
+                # Логика для Google Gemini
+                model_name = GEMINI_MODEL or "gemini-1.5-flash"
+                # В Gemini system_instruction выносится отдельно
+                response = client.models.generate_content(
+                    model=model_name,
+                    config={'system_instruction': str(SYSTEM_PROMPT)},
+                    contents=str(text)
+                )
+                return response.text
+
+            else:
+                # Логика для OpenAI-совместимых (DeepSeek, OpenRouter)
+                model = DEEPSEEK_MODEL if provider == "deepseek" else OPENROUTER_MODEL
+                messages = [
+                    {"role": "system", "content": str(SYSTEM_PROMPT)},
+                    {"role": "user", "content": str(text)}
+                ]
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    timeout=45
+                )
+                return response.choices[0].message.content
 
         except Exception as e:
             attempt += 1
             error_str = str(e).lower()
 
-            # Если ошибка лимитов (429) или баланса (402) — меняем ключ немедленно
-            provider = (AI_PROVIDER or "openrouter").strip().lower()
-            can_rotate = provider != "deepseek" and len(_OPENROUTER_KEYS) > 1
-            if can_rotate and ("429" in error_str or "limit" in error_str or "insufficient" in error_str):
-                logger.error(f"⚠️ Лимит ключа исчерпан: {e}")
+            # Ротация только для OpenRouter
+            can_rotate = provider == "openrouter" and len(_OPENROUTER_KEYS) > 1
+            if can_rotate and any(x in error_str for x in ["429", "limit", "insufficient"]):
+                logger.error(f"⚠️ Лимит OpenRouter исчерпан: {e}")
                 rotate_key()
             else:
-                logger.error(f"❌ Ошибка API (попытка {attempt}/{max_retries}): {e}")
+                logger.error(f"❌ Ошибка {provider} (попытка {attempt}/{max_retries}): {e}")
 
             if attempt < max_retries:
-                wait_time = base_delay * (2 ** (attempt - 1))  # 2, 4, 8 секунд
-                logger.info(f"Ждем {wait_time}с перед повтором...")
+                wait_time = base_delay * (2 ** (attempt - 1))
                 time.sleep(wait_time)
             else:
                 logger.critical("🚨 Все попытки рерайта провалены.")
-                return f"**[Ошибка рерайта]**\n\n{text}"  # Возвращаем оригинал, если AI сдох
+                return f"**[Ошибка рерайта]**\n\n{text}"
 
     return text
