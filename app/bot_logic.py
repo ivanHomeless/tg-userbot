@@ -19,7 +19,7 @@ from app import ai
 
 logger = logging.getLogger(__name__)
 
-ALBUM_SILENCE_TIMEOUT = 3.0
+ALBUM_SILENCE_TIMEOUT = 10.0
 
 
 
@@ -171,19 +171,25 @@ class TGBot:
 
         msg = event.message
         gid = msg.grouped_id
-        text = (msg.message or "").strip()
+        text = (msg.message or msg.caption or "").strip()
 
         if gid:
             if gid not in self.albums:
                 self.albums[gid] = {'messages': [], 'texts': [], 'timer_task': None}
 
-            if getattr(msg, "media", None):
+            # Если в этом куске альбома есть медиа (и это не ссылка) — сохраняем
+            if msg.media and not isinstance(msg.media, MessageMediaWebPage):
                 self.albums[gid]['messages'].append(msg)
+
+            # Если в этом куске есть текст — сохраняем в список
             if text:
                 self.albums[gid]['texts'].append(text)
+                logger.info(f"📥 Добавлен текст к альбому {gid} (всего фрагментов: {len(self.albums[gid]['texts'])})")
 
+            # Перезапуск таймера (Debounce)
             if self.albums[gid]['timer_task']:
                 self.albums[gid]['timer_task'].cancel()
+
             self.albums[gid]['timer_task'] = asyncio.create_task(self.send_album(gid))
         else:
             rewritten = ai.rewrite_text(text) if text else ""

@@ -15,38 +15,53 @@ from app.prompts import SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
-_OPENROUTER_KEYS = []
-if OPENROUTER_API_KEY:
-    _OPENROUTER_KEYS = [k.strip() for k in OPENROUTER_API_KEY.split(",") if k.strip()]
-_openrouter_key_index = 0
+# --- Универсальная инициализация ключей ---
+_PROVIDER = (AI_PROVIDER or "openrouter").strip().lower()
+
+
+def _setup_keys():
+    """Определяем список ключей в зависимости от провайдера"""
+    if _PROVIDER == "google":
+        source = GEMINI_API_KEY
+    elif _PROVIDER == "deepseek":
+        source = DEEPSEEK_API_KEY
+    else:  # openrouter
+        source = OPENROUTER_API_KEY
+
+    if not source:
+        return []
+    return [k.strip() for k in source.split(",") if k.strip()]
+
+
+_KEYS = _setup_keys()
+_current_idx = 0
+
 
 def get_llm_client():
-    """Получаем клиента выбранного провайдера"""
-    global _openrouter_key_index
-    provider = (AI_PROVIDER or "openrouter").strip().lower()
+    """Получаем клиента, используя текущий активный ключ"""
+    global _current_idx
 
-    if provider == "google":
-        if not GEMINI_API_KEY:
-            raise RuntimeError("GEMINI_API_KEY is not set")
-        return genai.Client(api_key=GEMINI_API_KEY)
+    if not _KEYS:
+        raise RuntimeError(f"API ключи для {_PROVIDER} не настроены в .env")
 
-    if provider == "deepseek":
-        if not DEEPSEEK_API_KEY:
-            raise RuntimeError("DEEPSEEK_API_KEY is not set")
-        return OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
+    current_key = _KEYS[_current_idx]
+
+    if _PROVIDER == "google":
+        return genai.Client(api_key=current_key)
+
+    if _PROVIDER == "deepseek":
+        return OpenAI(api_key=current_key, base_url="https://api.deepseek.com")
 
     # default: openrouter
-    if not _OPENROUTER_KEYS:
-        raise RuntimeError("OPENROUTER_API_KEY is not set (or empty)")
-    key = _OPENROUTER_KEYS[_openrouter_key_index]
-    return OpenAI(base_url="https://openrouter.ai/api/v1", api_key=key)
+    return OpenAI(base_url="https://openrouter.ai/api/v1", api_key=current_key)
+
 
 def rotate_key():
-    global _openrouter_key_index
-    if not _OPENROUTER_KEYS:
-        return
-    _openrouter_key_index = (_openrouter_key_index + 1) % len(_OPENROUTER_KEYS)
-    logger.warning(f"🔄 Смена API ключа. Используем ключ №{_openrouter_key_index + 1}")
+    """Универсальный сдвиг индекса для любого провайдера"""
+    global _current_idx
+    if len(_KEYS) > 1:
+        _current_idx = (_current_idx + 1) % len(_KEYS)
+        logger.warning(f"🔄 {AI_PROVIDER}: Переключение на ключ №{_current_idx + 1}")
 
 def rewrite_text(text, max_retries=6):
     if not text:
@@ -87,21 +102,17 @@ def rewrite_text(text, max_retries=6):
 
         except Exception as e:
             attempt += 1
-            error_str = str(e).lower()
+            err_str = str(e).lower()
 
-            # Ротация только для OpenRouter
-            can_rotate = provider == "openrouter" and len(_OPENROUTER_KEYS) > 1
-            if can_rotate and any(x in error_str for x in ["429", "limit", "insufficient"]):
-                logger.error(f"⚠️ Лимит OpenRouter исчерпан: {e}")
+            # Если ошибка лимитов — крутим ключ
+            if any(x in err_str for x in ["429", "limit", "quota", "402", "exhausted"]):
                 rotate_key()
-            else:
-                logger.error(f"❌ Ошибка {provider} (попытка {attempt}/{max_retries}): {e}")
+
+            logger.error(f"❌ Ошибка {_PROVIDER} (попытка {attempt}/{max_retries}): {e}")
 
             if attempt < max_retries:
-                wait_time = base_delay * (2 ** (attempt - 1))
-                time.sleep(wait_time)
+                time.sleep(base_delay * (2 ** (attempt - 1)))
             else:
-                logger.critical("🚨 Все попытки рерайта провалены.")
                 return f"**[Ошибка рерайта]**\n\n{text}"
 
     return text
