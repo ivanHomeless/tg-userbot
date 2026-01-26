@@ -110,9 +110,11 @@ class MessageProcessor:
         Шаг 3: Сборка готовых постов
         
         Обрабатывает:
-        - Альбомы (grouped_id)
+        - Альбомы (grouped_id) — ВАЖНО: ждём таймаут перед сборкой!
         - Одиночные сообщения
         """
+        now = datetime.utcnow()
+        
         # Берём все готовые к сборке сообщения
         stmt = select(MessageQueue).where(
             MessageQueue.ready_to_post == False,
@@ -134,22 +136,38 @@ class MessageProcessor:
         logger.info(f"📦 Найдено {len(messages)} сообщений для сборки постов")
         
         # Группируем по типам
-        albums = {}
+        albums = {}  # grouped_id → {"messages": [...], "collected_at": datetime}
         singles = []
         
         for msg in messages:
             if msg.grouped_id:
                 if msg.grouped_id not in albums:
-                    albums[msg.grouped_id] = []
-                albums[msg.grouped_id].append(msg)
+                    albums[msg.grouped_id] = {
+                        "messages": [],
+                        "collected_at": msg.collected_at
+                    }
+                albums[msg.grouped_id]["messages"].append(msg)
             else:
                 singles.append(msg)
         
-        # Обрабатываем альбомы
-        for gid, msgs in albums.items():
-            await self._build_album_post(msgs)
+        # Обрабатываем альбомы (ТОЛЬКО если прошло >= 5 сек с момента сбора)
+        ALBUM_TIMEOUT = 5  # секунд ожидания всех медиа в альбоме
         
-        # Обрабатываем одиночные
+        for gid, data in albums.items():
+            msgs = data["messages"]
+            collected_at = data["collected_at"]
+            
+            # Проверяем: прошло ли достаточно времени?
+            elapsed = (now - collected_at).total_seconds()
+            
+            if elapsed >= ALBUM_TIMEOUT:
+                # ✅ Достаточно времени — собираем
+                await self._build_album_post(msgs)
+            else:
+                # ⏳ Ждём ещё (возможно, придёт ещё медиа)
+                logger.debug(f"⏳ Альбом {gid}: ждём ещё {ALBUM_TIMEOUT - elapsed:.1f}с")
+        
+        # Обрабатываем одиночные (сразу)
         for msg in singles:
             await self._build_single_post(msg)
     

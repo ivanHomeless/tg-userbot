@@ -126,6 +126,20 @@ class TGBot:
         except Exception as e:
             logger.error(f"❌ Ошибка добавления источника {link}: {e}")
     
+    async def shutdown(self):
+        """Корректное завершение работы бота"""
+        logger.info("🔄 Закрытие соединений...")
+        
+        # Закрываем Telethon
+        if self.client.is_connected():
+            await self.client.disconnect()
+            logger.info("✅ Telethon отключён")
+        
+        # Закрываем пул соединений PostgreSQL
+        from app.database.engine import engine
+        await engine.dispose()
+        logger.info("✅ Пул соединений PostgreSQL закрыт")
+    
     async def run(self):
         """Запуск бота"""
         await self.client.start(phone=PHONE)
@@ -223,6 +237,5 @@ class TGBot:
             logger.info("⚠️  Получен сигнал остановки, завершаем задачи...")
         finally:
             # Корректное завершение
-            if self.client.is_connected():
-                await self.client.disconnect()
+            await self.shutdown()
             logger.info("✅ Все задачи завершены")
