@@ -29,12 +29,14 @@ class MessageProcessor:
         
         Обрабатывает сообщения со статусом 'pending'
         """
+        """Рерайт только одиночных сообщений (не альбомов)"""
         stmt = select(MessageQueue).where(
             MessageQueue.rewrite_status == 'pending',
             MessageQueue.original_text.isnot(None),
-            MessageQueue.original_text != ''
+            MessageQueue.original_text != '',
+            MessageQueue.grouped_id.is_(None)  # ← ДОБАВЬ ЭТО
         ).limit(50)
-        
+
         result = await self.db.execute(stmt)
         messages = result.scalars().all()
         
@@ -126,19 +128,19 @@ class MessageProcessor:
                 )
             )
         ).order_by(MessageQueue.collected_at)
-        
+
         result = await self.db.execute(stmt)
         messages = result.scalars().all()
-        
+
         if not messages:
             return
-        
+
         logger.info(f"📦 Найдено {len(messages)} сообщений для сборки постов")
-        
+
         # Группируем по типам
         albums = {}  # grouped_id → {"messages": [...], "collected_at": datetime}
         singles = []
-        
+
         for msg in messages:
             if msg.grouped_id:
                 if msg.grouped_id not in albums:
@@ -147,41 +149,54 @@ class MessageProcessor:
                         "collected_at": msg.collected_at
                     }
                 albums[msg.grouped_id]["messages"].append(msg)
+
+                # ✅ ИСПРАВЛЕНИЕ: Берем МАКСИМАЛЬНЫЙ collected_at
+                if msg.collected_at > albums[msg.grouped_id]["collected_at"]:
+                    albums[msg.grouped_id]["collected_at"] = msg.collected_at
             else:
                 singles.append(msg)
-        
-        # Обрабатываем альбомы (ТОЛЬКО если прошло >= 5 сек с момента сбора)
+
+        # Обрабатываем альбомы (ТОЛЬКО если прошло >= 5 сек с момента ПОСЛЕДНЕГО медиа)
         ALBUM_TIMEOUT = 5  # секунд ожидания всех медиа в альбоме
-        
+
         for gid, data in albums.items():
             msgs = data["messages"]
-            collected_at = data["collected_at"]
-            
+            collected_at = data["collected_at"]  # Теперь это ПОСЛЕДНИЙ collected_at
+
             # Проверяем: прошло ли достаточно времени?
             elapsed = (now - collected_at).total_seconds()
-            
+
             if elapsed >= ALBUM_TIMEOUT:
                 # ✅ Достаточно времени — собираем
                 await self._build_album_post(msgs)
             else:
                 # ⏳ Ждём ещё (возможно, придёт ещё медиа)
                 logger.debug(f"⏳ Альбом {gid}: ждём ещё {ALBUM_TIMEOUT - elapsed:.1f}с")
-        
+
         # Обрабатываем одиночные (сразу)
         for msg in singles:
             await self._build_single_post(msg)
-    
+
+
     async def _build_album_post(self, messages: list[MessageQueue]):
         """Создаёт пост из альбома (несколько медиа)"""
-        # Склеиваем весь рерайтнутый текст
-        texts = [m.rewritten_text for m in messages if m.rewritten_text]
-        final_text = "\n\n".join(texts) if texts else ""
-        
-        # Если альбом без текста — добавляем стандартную подпись
-        if not final_text:
+
+        # Склеиваем весь ОРИГИНАЛЬНЫЙ текст (не rewritten!)
+        original_texts = [m.original_text for m in messages if m.original_text]
+        combined_original = "\n\n".join(original_texts) if original_texts else ""
+
+        # РЕРАЙТ ЗДЕСЬ (один раз для всего альбома)
+        final_text = ""
+        if combined_original:
+            try:
+                final_text = ai.rewrite_text(combined_original)
+            except Exception as e:
+                logger.error(f"❌ Ошибка рерайта альбома: {e}")
+                final_text = combined_original  # fallback на оригинал
+        else:
             final_text = MEDIA_ONLY_CAPTION
             logger.info(f"📸 Альбом без текста — добавлена стандартная подпись")
-        
+
         # Создаём пост
         post = Post(
             grouped_id=messages[0].grouped_id,
@@ -192,7 +207,7 @@ class MessageProcessor:
         )
         self.db.add(post)
         await self.db.flush()
-        
+
         # Добавляем медиа из альбома
         for idx, msg in enumerate(messages):
             if msg.media_type:
@@ -206,14 +221,14 @@ class MessageProcessor:
                     order_num=idx
                 )
                 self.db.add(media)
-        
+
         # Помечаем как готовые
         for msg in messages:
             msg.ready_to_post = True
-        
+
         await self.db.commit()
-        logger.info(f"✅ Альбом собран: grouped_id={post.grouped_id}, {len(messages)} файлов")
-    
+        logger.info(f"✅ Альбом собран и рерайтнут: grouped_id={post.grouped_id}, {len(messages)} файлов")
+
     async def _build_single_post(self, msg: MessageQueue):
         """Создаёт пост из одиночного сообщения"""
         final_text = msg.rewritten_text or ""

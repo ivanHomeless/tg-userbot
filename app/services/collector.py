@@ -119,11 +119,18 @@ class MessageCollector:
             self.db.add(queue_msg)
             await self.db.commit()
             logger.info(f"✅ Текст без медиа: {chat_id}/{msg.id}")
-    
+
     async def _handle_media_with_text(self, msg, chat_id):
         """Обработка медиа + текст (обычный случай)"""
         file_id, access_hash, file_ref = self._extract_media_data(msg)
-        
+
+        # ИСПРАВЛЕНИЕ: для альбомов статус всегда 'skipped'
+        # (рерайт будет в _build_album_post)
+        if msg.grouped_id:
+            rewrite_status = 'skipped'
+        else:
+            rewrite_status = 'pending'
+
         queue_msg = MessageQueue(
             source_id=chat_id,
             message_id=msg.id,
@@ -135,21 +142,19 @@ class MessageCollector:
             media_file_reference=file_ref,
             original_chat_id=chat_id,
             original_message_id=msg.id,
-            rewrite_status='pending',
+            rewrite_status=rewrite_status,  # ← ИЗМЕНЕНО
             awaiting_text=False
         )
-        
         self.db.add(queue_msg)
         await self.db.commit()
-        
+
         # ВАЖНО: Если это часть альбома — обновляем collected_at у ВСЕХ медиа альбома
-        # Это сбрасывает таймер (как Timer.cancel() + Timer.start() в старом коде)
         if msg.grouped_id:
             await self._update_album_collected_at(chat_id, msg.grouped_id)
             logger.info(f"✅ Медиа+текст (альбом, таймер сброшен): {chat_id}/{msg.id}")
         else:
             logger.info(f"✅ Медиа+текст: {chat_id}/{msg.id}")
-    
+
     async def _handle_media_without_text(self, msg, chat_id):
         """
         Обработка медиа без текста
