@@ -2,7 +2,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 from app.models.post import Post, PostMedia
 from app.utils import split_text
-from app.config import DEST, POST_DELAY
+from app.config import DEST, POST_DELAY, CAPTION_LIMIT
 from datetime import datetime
 from telethon import TelegramClient
 from telethon.tl.types import (
@@ -126,38 +126,63 @@ class PostPublisher:
         """
         Отправка медиа + текст
         
-        КРИТИЧНО: ВСЕГДА разделяем!
+        УМНАЯ ЛОГИКА:
+        - Если текст короткий (< CAPTION_LIMIT) → отправляем ВМЕСТЕ
+        - Если текст длинный (>= CAPTION_LIMIT) → РАЗДЕЛЯЕМ
         
-        1. Сначала медиа БЕЗ caption
-        2. Пауза для гарантии доставки
-        3. Текст отдельным сообщением
+        Почему разделяем длинный текст:
+        1. Caption ограничен (1024 без премиума, 2048 с премиумом)
+        2. Длинный текст в caption обрезается Telegram
+        3. Гарантия доставки полного текста
         """
-        # 1. Отправляем медиа БЕЗ caption
-        media_objects = []
-        for item in media_items:
-            media_obj = self._restore_input_media(item)
-            if media_obj:
-                media_objects.append(media_obj)
+        # Определяем стратегию
+        text_length = len(text)
+        use_caption = text_length < CAPTION_LIMIT
         
-        if media_objects:
-            await self.client.send_file(
-                DEST,
-                media_objects,
-                caption=None,  # ← БЕЗ подписи!
-                force_document=False
-            )
-            logger.info(f"🖼️ Отправлено медиа: {len(media_objects)} файлов")
-        
-        # 2. Ждём гарантированной доставки медиа
-        await asyncio.sleep(1.5)
-        
-        # 3. Текст отдельными сообщениями
-        chunks = split_text(text, limit=4096)
-        for chunk in chunks:
-            await self.client.send_message(DEST, chunk)
-            await asyncio.sleep(0.5)
-        
-        logger.info(f"📝 Отправлен текст после медиа ({len(chunks)} частей)")
+        if use_caption:
+            # ✅ ВМЕСТЕ: текст короткий, можно в caption
+            media_objects = []
+            for item in media_items:
+                media_obj = self._restore_input_media(item)
+                if media_obj:
+                    media_objects.append(media_obj)
+            
+            if media_objects:
+                await self.client.send_file(
+                    DEST,
+                    media_objects,
+                    caption=text,  # ← С подписью!
+                    force_document=False
+                )
+                logger.info(f"🖼️📝 Отправлено медиа + текст вместе: {len(media_objects)} файлов, caption={text_length} симв")
+        else:
+            # ❌ РАЗДЕЛЯЕМ: текст длинный, не влезет в caption
+            # 1. Отправляем медиа БЕЗ caption
+            media_objects = []
+            for item in media_items:
+                media_obj = self._restore_input_media(item)
+                if media_obj:
+                    media_objects.append(media_obj)
+            
+            if media_objects:
+                await self.client.send_file(
+                    DEST,
+                    media_objects,
+                    caption=None,  # ← БЕЗ подписи!
+                    force_document=False
+                )
+                logger.info(f"🖼️ Отправлено медиа: {len(media_objects)} файлов")
+            
+            # 2. Ждём гарантированной доставки медиа
+            await asyncio.sleep(1.5)
+            
+            # 3. Текст отдельными сообщениями
+            chunks = split_text(text, limit=4096)
+            for chunk in chunks:
+                await self.client.send_message(DEST, chunk)
+                await asyncio.sleep(0.5)
+            
+            logger.info(f"📝 Отправлен длинный текст после медиа ({len(chunks)} частей, {text_length} симв)")
     
     def _restore_input_media(self, media_item: PostMedia):
         """

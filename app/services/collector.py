@@ -147,30 +147,59 @@ class MessageCollector:
         """
         Обработка медиа без текста
         
-        Помечаем "ждём текст" на AWAIT_TEXT_TIMEOUT секунд
+        ВАЖНО: В альбомах только ПЕРВОЕ медиа может иметь текст!
+        Остальные медиа в альбоме всегда без текста — это нормально.
+        
+        Логика:
+        - Если grouped_id == None → одиночное медиа → ждём текст
+        - Если grouped_id != None → часть альбома → НЕ ждём текст
         """
         file_id, access_hash, file_ref = self._extract_media_data(msg)
-        awaiting_until = datetime.utcnow() + timedelta(seconds=AWAIT_TEXT_TIMEOUT)
         
-        queue_msg = MessageQueue(
-            source_id=chat_id,
-            message_id=msg.id,
-            grouped_id=msg.grouped_id,
-            original_text=None,
-            media_type=self._get_media_type(msg),
-            media_file_id=file_id,
-            media_access_hash=access_hash,
-            media_file_reference=file_ref,
-            original_chat_id=chat_id,
-            original_message_id=msg.id,
-            rewrite_status='skipped',
-            awaiting_text=True,
-            awaiting_until=awaiting_until
-        )
-        
-        self.db.add(queue_msg)
-        await self.db.commit()
-        logger.info(f"⏳ Медиа без текста (ждём {AWAIT_TEXT_TIMEOUT}с): {chat_id}/{msg.id}")
+        # Проверяем: это часть альбома?
+        if msg.grouped_id:
+            # ✅ Часть альбома — НЕ ждём текст (только первое медиа имеет текст)
+            queue_msg = MessageQueue(
+                source_id=chat_id,
+                message_id=msg.id,
+                grouped_id=msg.grouped_id,
+                original_text=None,
+                media_type=self._get_media_type(msg),
+                media_file_id=file_id,
+                media_access_hash=access_hash,
+                media_file_reference=file_ref,
+                original_chat_id=chat_id,
+                original_message_id=msg.id,
+                rewrite_status='skipped',  # текста не будет
+                awaiting_text=False  # НЕ ждём
+            )
+            
+            self.db.add(queue_msg)
+            await self.db.commit()
+            logger.info(f"📸 Альбом: медиа без текста (это нормально): {chat_id}/{msg.id}")
+        else:
+            # ❌ Одиночное медиа — ЖДЁМ текст
+            awaiting_until = datetime.utcnow() + timedelta(seconds=AWAIT_TEXT_TIMEOUT)
+            
+            queue_msg = MessageQueue(
+                source_id=chat_id,
+                message_id=msg.id,
+                grouped_id=None,
+                original_text=None,
+                media_type=self._get_media_type(msg),
+                media_file_id=file_id,
+                media_access_hash=access_hash,
+                media_file_reference=file_ref,
+                original_chat_id=chat_id,
+                original_message_id=msg.id,
+                rewrite_status='skipped',
+                awaiting_text=True,  # ЖДЁМ текст
+                awaiting_until=awaiting_until
+            )
+            
+            self.db.add(queue_msg)
+            await self.db.commit()
+            logger.info(f"⏳ Одиночное медиа без текста (ждём {AWAIT_TEXT_TIMEOUT}с): {chat_id}/{msg.id}")
     
     def _extract_media_data(self, msg):
         """Извлекает file_id, access_hash, file_reference из медиа"""

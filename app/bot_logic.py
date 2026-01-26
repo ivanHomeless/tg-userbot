@@ -138,9 +138,12 @@ class TGBot:
         @self.client.on(events.NewMessage())
         async def message_handler(event):
             """Сохраняет входящие сообщения в очередь"""
-            async with SessionLocal() as session:
-                collector = MessageCollector(session)
-                await collector.collect_message(event)
+            try:
+                async with SessionLocal() as session:
+                    collector = MessageCollector(session)
+                    await collector.collect_message(event)
+            except Exception as e:
+                logger.error(f"❌ Ошибка в message_handler: {e}", exc_info=True)
         
         # ============================================
         # ФОНОВЫЕ ЗАДАЧИ
@@ -153,6 +156,9 @@ class TGBot:
                     async with SessionLocal() as session:
                         processor = MessageProcessor(session)
                         await processor.process_pending_rewrites()
+                except asyncio.CancelledError:
+                    logger.info("🛑 Остановка rewriter...")
+                    break
                 except Exception as e:
                     logger.error(f"❌ Ошибка в rewriter: {e}", exc_info=True)
                 await asyncio.sleep(30)
@@ -164,6 +170,9 @@ class TGBot:
                     async with SessionLocal() as session:
                         processor = MessageProcessor(session)
                         await processor.close_expired_awaiting()
+                except asyncio.CancelledError:
+                    logger.info("🛑 Остановка awaiting_closer...")
+                    break
                 except Exception as e:
                     logger.error(f"❌ Ошибка в awaiting_closer: {e}", exc_info=True)
                 await asyncio.sleep(15)
@@ -175,6 +184,9 @@ class TGBot:
                     async with SessionLocal() as session:
                         processor = MessageProcessor(session)
                         await processor.build_posts_from_messages()
+                except asyncio.CancelledError:
+                    logger.info("🛑 Остановка post_builder...")
+                    break
                 except Exception as e:
                     logger.error(f"❌ Ошибка в post_builder: {e}", exc_info=True)
                 await asyncio.sleep(45)
@@ -186,6 +198,9 @@ class TGBot:
                     async with SessionLocal() as session:
                         publisher = PostPublisher(self.client, session)
                         await publisher.publish_scheduled_posts()
+                except asyncio.CancelledError:
+                    logger.info("🛑 Остановка publisher...")
+                    break
                 except Exception as e:
                     logger.error(f"❌ Ошибка в publisher: {e}", exc_info=True)
                 await asyncio.sleep(60)
@@ -196,10 +211,18 @@ class TGBot:
         
         logger.info("🚀 Бот запущен и слушает каналы...")
         
-        await asyncio.gather(
-            self.client.run_until_disconnected(),
-            background_rewriter(),
-            background_awaiting_closer(),
-            background_post_builder(),
-            background_publisher()
-        )
+        try:
+            await asyncio.gather(
+                self.client.run_until_disconnected(),
+                background_rewriter(),
+                background_awaiting_closer(),
+                background_post_builder(),
+                background_publisher()
+            )
+        except asyncio.CancelledError:
+            logger.info("⚠️  Получен сигнал остановки, завершаем задачи...")
+        finally:
+            # Корректное завершение
+            if self.client.is_connected():
+                await self.client.disconnect()
+            logger.info("✅ Все задачи завершены")

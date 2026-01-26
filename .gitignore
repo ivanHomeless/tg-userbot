@@ -22,6 +22,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+*.pyc
 
 # Telegram сессии
 *.session
@@ -32,7 +33,7 @@ data/userbot_session*
 *.sqlite3
 *.db
 data/seen.sqlite3
-dataa/
+data/
 
 # Логи
 logs/
@@ -57,8 +58,9 @@ temp/
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Alembic (коммитим миграции, но не лок-файлы)
+# Alembic (коммитим миграции, но не кэш)
 alembic/versions/__pycache__/
 
 # Pytest
@@ -75,3 +77,6 @@ htmlcov/
 # Backup
 *.bak
 *.backup
+
+# Процессы
+*.pid
