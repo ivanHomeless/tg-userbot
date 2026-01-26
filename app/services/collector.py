@@ -141,7 +141,14 @@ class MessageCollector:
         
         self.db.add(queue_msg)
         await self.db.commit()
-        logger.info(f"✅ Медиа+текст: {chat_id}/{msg.id}")
+        
+        # ВАЖНО: Если это часть альбома — обновляем collected_at у ВСЕХ медиа альбома
+        # Это сбрасывает таймер (как Timer.cancel() + Timer.start() в старом коде)
+        if msg.grouped_id:
+            await self._update_album_collected_at(chat_id, msg.grouped_id)
+            logger.info(f"✅ Медиа+текст (альбом, таймер сброшен): {chat_id}/{msg.id}")
+        else:
+            logger.info(f"✅ Медиа+текст: {chat_id}/{msg.id}")
     
     async def _handle_media_without_text(self, msg, chat_id):
         """
@@ -176,6 +183,10 @@ class MessageCollector:
             
             self.db.add(queue_msg)
             await self.db.commit()
+            
+            # ВАЖНО: Обновляем collected_at у всех медиа альбома (сброс таймера)
+            await self._update_album_collected_at(chat_id, msg.grouped_id)
+            
             logger.debug(f"📸 Альбом: медиа #{msg.id} (grouped_id={msg.grouped_id})")
         else:
             # ❌ Одиночное медиа — ЖДЁМ текст
@@ -200,6 +211,31 @@ class MessageCollector:
             self.db.add(queue_msg)
             await self.db.commit()
             logger.info(f"⏳ Одиночное медиа без текста (ждём {AWAIT_TEXT_TIMEOUT}с): {chat_id}/{msg.id}")
+    
+    async def _update_album_collected_at(self, chat_id: int, grouped_id: int):
+        """
+        Обновляет collected_at у всех медиа в альбоме
+        
+        Это аналог Timer.cancel() + Timer.start() в старом коде:
+        - Каждое новое медиа сбрасывает таймер
+        - Альбом собирается через 5 сек после ПОСЛЕДНЕГО медиа
+        """
+        from sqlalchemy import update
+        
+        now = datetime.utcnow()
+        
+        stmt = update(MessageQueue).where(
+            and_(
+                MessageQueue.source_id == chat_id,
+                MessageQueue.grouped_id == grouped_id,
+                MessageQueue.ready_to_post == False
+            )
+        ).values(collected_at=now)
+        
+        await self.db.execute(stmt)
+        await self.db.commit()
+        
+        logger.debug(f"⏱️  Альбом {grouped_id}: таймер сброшен")
     
     def _extract_media_data(self, msg):
         """Извлекает file_id, access_hash, file_reference из медиа"""
