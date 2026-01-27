@@ -157,7 +157,7 @@ class MessageProcessor:
                 singles.append(msg)
 
         # Обрабатываем альбомы (ТОЛЬКО если прошло >= 5 сек с момента ПОСЛЕДНЕГО медиа)
-        ALBUM_TIMEOUT = 5  # секунд ожидания всех медиа в альбоме
+        ALBUM_TIMEOUT = 10  # секунд ожидания всех медиа в альбоме
 
         for gid, data in albums.items():
             msgs = data["messages"]
