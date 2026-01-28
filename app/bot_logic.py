@@ -29,6 +29,7 @@ class TGBot:
     
     def __init__(self):
         self.client = TelegramClient(SESSION_NAME, API_ID, API_HASH, sequential_updates=True)
+        self.dest_chat_id = None  # Будет заполнено при старте
     
     async def setup(self):
         """Инициализация БД и папок"""
@@ -144,14 +145,50 @@ class TGBot:
         """Запуск бота"""
         await self.client.start(phone=PHONE)
         await self.setup()
+
+        # Получаем ID канала назначения (может быть username или ID)
+        try:
+            dest_entity = await self.client.get_entity(DEST)
+            self.dest_chat_id = dest_entity.id
+            logger.info(f"✅ Канал назначения: {dest_entity.title} (ID: {self.dest_chat_id})")
+        except Exception as e:
+            logger.error(f"❌ Не удалось получить канал назначения {DEST}: {e}")
+            raise
+
         await self.join_sources()
         
         # ============================================
-        # ОБРАБОТЧИК ВХОДЯЩИХ СООБЩЕНИЙ
+        # ОБРАБОТЧИКИ ВХОДЯЩИХ СООБЩЕНИЙ
         # ============================================
-        @self.client.on(events.NewMessage(incoming=True))
+
+        @self.client.on(events.Album())
+        async def album_handler(event):
+            """Обработчик альбомов - Telethon сам собирает все медиа"""
+            # Игнорируем альбомы из канала назначения
+            if self.dest_chat_id and event.chat_id == self.dest_chat_id:
+                logger.debug(f"⏭️ Пропущен альбом из DEST канала: {event.chat_id}")
+                return
+
+            try:
+                async with SessionLocal() as session:
+                    collector = MessageCollector(session)
+                    await collector.collect_album(event)
+            except Exception as e:
+                logger.error(f"❌ Ошибка в album_handler: {e}", exc_info=True)
+
+        @self.client.on(events.NewMessage())
         async def message_handler(event):
-            """Сохраняет входящие сообщения в очередь"""
+            """Обработчик одиночных сообщений (не альбомов)"""
+            # Игнорируем сообщения из канала назначения (наши публикации)
+            if self.dest_chat_id and event.chat_id == self.dest_chat_id:
+                logger.debug(f"⏭️ Пропущено сообщение из DEST канала: {event.chat_id}/{event.message.id}")
+                return
+
+            # Пропускаем альбомы (они обрабатываются в album_handler)
+            if event.message.grouped_id:
+                logger.debug(f"⏭️ Пропущен альбом в NewMessage (обработан в Album): {event.chat_id}/{event.message.id}")
+                return
+
             try:
                 async with SessionLocal() as session:
                     collector = MessageCollector(session)
@@ -194,7 +231,7 @@ class TGBot:
                 await asyncio.sleep(15)
         
         async def background_post_builder():
-            """Сборка постов из обработанных сообщений (каждые 5 сек)"""
+            """Сборка постов из обработанных сообщений (каждые 3 сек)"""
             while True:
                 try:
                     async with post_builder_lock:
@@ -206,7 +243,7 @@ class TGBot:
                     break
                 except Exception as e:
                     logger.error(f"❌ Ошибка в post_builder: {e}", exc_info=True)
-                await asyncio.sleep(5)  # Быстрая проверка для event-driven альбомов
+                await asyncio.sleep(3)  # Быстрая обработка альбомов (events.Album собирает сразу)
         
         async def background_publisher():
             """Публикация готовых постов (каждые 15 секунд)"""

@@ -154,28 +154,17 @@ class MessageProcessor:
             else:
                 singles.append(msg)
 
-        # Обрабатываем альбомы (ТОЛЬКО если прошло >= N сек с момента ПОСЛЕДНЕГО медиа)
-        # ВАЖНО: Telegram может доставлять большие альбомы (10 фото) медленно!
-        ALBUM_TIMEOUT = 30  # секунд ожидания всех медиа в альбоме
-
+        # Обрабатываем альбомы (СРАЗУ, без ожидания - events.Album уже собрал все медиа)
+        # Проверяем только что все медиа альбома в выборке
         albums_built = 0
         for gid, data in albums.items():
             msgs = data["messages"]
-            collected_at = data["collected_at"]  # Теперь это ПОСЛЕДНИЙ collected_at
-
-            # Проверяем: прошло ли достаточно времени?
-            elapsed = (now - collected_at).total_seconds()
-
-            if elapsed < ALBUM_TIMEOUT:
-                # ⏳ Ждём ещё (возможно, придёт ещё медиа)
-                logger.debug(f"⏳ Альбом {gid}: ждём ещё {ALBUM_TIMEOUT - elapsed:.1f}с")
-                continue
 
             # Проверяем: нет ли ещё медиа с тем же grouped_id, которые не попали в выборку
-            # (например, awaiting_text=True или rewrite_status ещё не ready)
+            # (например, rewrite_status ещё не 'skipped')
             total_in_db = await self._count_album_members(gid)
             if total_in_db > len(msgs):
-                logger.info(
+                logger.debug(
                     f"⏳ Альбом {gid}: в выборке {len(msgs)}, в БД {total_in_db} — "
                     f"ждём остальные"
                 )
