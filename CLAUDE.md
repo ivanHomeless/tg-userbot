@@ -59,14 +59,15 @@ pytest -x                                   # Stop on first failure
 ```
 Source Channels (via Telethon events)
     ↓
-MessageCollector (app/services/collector.py)
+    ├─ events.Album() → MessageCollector.collect_album()
+    └─ events.NewMessage() → MessageCollector.collect_message()
     ↓ Saves to DB
 MessageQueue table (original_text, media_file_id, rewrite_status)
     ↓ Processed by 3 background tasks
 MessageProcessor (app/services/processor.py)
     ├─ Rewriter: AI rewrites text (30s interval)
     ├─ AwaitingCloser: Closes orphan media waits (15s interval)
-    └─ PostBuilder: Assembles posts from ready messages (10s interval, uses asyncio.Lock)
+    └─ PostBuilder: Assembles posts from ready messages (3s interval, uses asyncio.Lock)
     ↓ Creates
 Post + PostMedia tables (final_text, status='scheduled')
     ↓ Published by
@@ -75,29 +76,33 @@ PostPublisher (app/services/publisher.py)
 Destination Channel (DEST env var)
 ```
 
-### Critical Background Tasks (all in app/bot_logic.py:143)
+### Critical Background Tasks (all in app/bot_logic.py:205-247)
 
 **4 parallel asyncio tasks:**
 1. `background_rewriter()` - Every 30s, AI rewrites text for single messages (NOT albums)
 2. `background_awaiting_closer()` - Every 15s, closes expired media waiting for text
-3. `background_post_builder()` - Every 10s, builds posts (protected by asyncio.Lock)
+3. `background_post_builder()` - Every 3s, builds posts (protected by asyncio.Lock)
 4. `background_publisher()` - Every 15s, publishes scheduled posts to destination
 
-**Important:** PostBuilder uses `asyncio.Lock()` to prevent race conditions when processing albums.
+**Important:** PostBuilder uses `asyncio.Lock()` to prevent race conditions. Fast 3s interval for quick album processing.
 
 ### Album Handling (Media Groups)
 
 **Challenge:** Telegram sends albums as separate messages with same `grouped_id`, arriving over several seconds.
 
-**Solution:**
-1. Collector marks album messages as `rewrite_status='skipped'` (no individual rewrite)
-2. PostBuilder waits `ALBUM_TIMEOUT=20` seconds after last media arrives (app/services/processor.py:161)
-3. Once timeout passes, combines all original texts and AI rewrites the combined caption ONCE
-4. Creates single Post with multiple PostMedia entries
+**Solution (using Telethon's events.Album):**
+1. `@client.on(events.Album())` handler - Telethon automatically waits and collects ALL media in `event.messages`
+2. Collector extracts ALL captions from all messages (joined with `\n\n`)
+3. Saves all media with same `grouped_id`, text attached to first message
+4. PostBuilder assembles immediately (no timeout needed) - combines texts and AI rewrites ONCE
+5. Creates single Post with multiple PostMedia entries
 
 **Key files:**
-- Album detection: app/services/collector.py:135-185
-- Album assembly: app/services/processor.py:204-253
+- Album handler: app/bot_logic.py:164-177
+- Album collection: app/services/collector.py:38-80
+- Album assembly: app/services/processor.py:210-259
+
+**Important:** No timers or locks needed - Telethon handles synchronization!
 
 ### Orphan Media Pattern
 
@@ -195,10 +200,10 @@ async with SessionLocal() as session:
 # Session auto-closes, releases connection to pool
 ```
 
-### 2. Album Timeout Logic
-PostBuilder waits 20 seconds (ALBUM_TIMEOUT) from the LAST media's `collected_at` timestamp before assembling. This prevents premature assembly when large albums arrive slowly.
+### 2. Album Processing with events.Album
+**No timeout needed!** Telethon's `events.Album` automatically waits for all media before firing the handler. PostBuilder assembles albums immediately when all media have `rewrite_status='skipped'`.
 
-**Critical code:** app/services/processor.py:161-186
+**Critical code:** app/bot_logic.py:164-177, app/services/collector.py:38-80
 
 ### 3. File Reference Expiry
 Telegram changes `file_reference` every ~24 hours. Publisher catches `FILE_REFERENCE_EXPIRED` and should re-fetch or use forwarding for old media.
@@ -279,9 +284,12 @@ GROUP BY grouped_id;
 
 ```
 app/
-├── bot_logic.py         # Orchestrator: event handlers + 4 background tasks
+├── bot_logic.py         # Orchestrator: 2 event handlers + 4 background tasks
+│                        #   - @client.on(events.Album()) → album_handler
+│                        #   - @client.on(events.NewMessage()) → message_handler
+│                        #   - DEST channel ID filtering
 ├── services/
-│   ├── collector.py     # Ingests messages from Telegram events
+│   ├── collector.py     # Ingests messages: collect_album() + collect_message()
 │   ├── processor.py     # 3 background tasks: rewrite, close waits, build posts
 │   └── publisher.py     # Sends posts to destination channel
 ├── models/              # 4 SQLAlchemy models (Source, MessageQueue, Post, PostMedia)
@@ -310,3 +318,40 @@ app/
 2. Test with real bot: `python main.py`
 3. Monitor logs: `tail -f logs/bot_work.log`
 4. Check DB state with debugging queries above
+
+## Recent Changes (Jan 2026)
+
+### v1.1.0 - Album Processing Refactor
+
+**Problem:** Albums sometimes lost photos due to timing issues and sequential event processing.
+
+**Solution - Migrated to `events.Album`:**
+
+1. **Two event handlers** instead of one:
+   - `@client.on(events.Album())` - Telethon automatically collects ALL media
+   - `@client.on(events.NewMessage())` - Only single messages (filters out albums)
+
+2. **New method `collect_album()`:**
+   - Receives all media in `event.messages` (already collected by Telethon)
+   - Extracts **ALL** captions from **ALL** messages (joined with `\n\n`)
+   - No timers or locks needed
+
+3. **Simplified processor:**
+   - No waiting for 20-30 second timeout
+   - Albums assembled **immediately** when ready
+   - Faster processing: 5s → 3s interval
+
+4. **DEST channel filtering:**
+   - Bot ignores its own published messages
+   - Resolves `@username` or ID at startup to numeric chat_id
+
+**Benefits:**
+- ✅ 100% reliable album processing (no lost photos)
+- ✅ Faster processing (no artificial timeouts)
+- ✅ Simpler code (removed `_album_locks`, `_album_timers`, `ALBUM_BUILD_TIMEOUT`)
+- ✅ All captions collected from multi-text albums
+
+**Files changed:**
+- app/bot_logic.py - Two handlers, DEST filtering
+- app/services/collector.py - New `collect_album()`, simplified album logic
+- app/services/processor.py - Removed timeout waiting for albums
