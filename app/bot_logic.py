@@ -162,7 +162,9 @@ class TGBot:
         # ============================================
         # ФОНОВЫЕ ЗАДАЧИ
         # ============================================
-        
+
+        post_builder_lock = asyncio.Lock()
+
         async def background_rewriter():
             """Фоновый рерайт текстов (каждые 30 сек)"""
             while True:
@@ -195,9 +197,10 @@ class TGBot:
             """Сборка постов из обработанных сообщений (каждые 10 сек)"""
             while True:
                 try:
-                    async with SessionLocal() as session:
-                        processor = MessageProcessor(session)
-                        await processor.build_posts_from_messages()
+                    async with post_builder_lock:
+                        async with SessionLocal() as session:
+                            processor = MessageProcessor(session)
+                            await processor.build_posts_from_messages()
                 except asyncio.CancelledError:
                     logger.info("🛑 Остановка post_builder...")
                     break
