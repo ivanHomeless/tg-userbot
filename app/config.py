@@ -49,7 +49,7 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
 # НАСТРОЙКИ БОТА
 # ============================================
 POST_DELAY = int(os.getenv("POST_DELAY", 10))  # секунд между постами
-AWAIT_TEXT_TIMEOUT = 10  # секунд ожидания текста после медиа
+AWAIT_TEXT_TIMEOUT = 20  # секунд ожидания текста после медиа/альбома
 MEDIA_ONLY_CAPTION = "По всем вопросам с удовольствием отвечу, для заказа пишите @VES_nn"
 
 # Лимит caption (1024 без премиума, 2048 с премиумом)

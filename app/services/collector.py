@@ -24,7 +24,7 @@ class MessageCollector:
     async def collect_message(self, event):
         """
         Сохраняет сообщение в очередь с умной логикой склейки
-        
+
         Обрабатывает 4 случая:
         1. Текст без медиа → проверяем ожидающее медиа
         2. Медиа + текст → обычное сохранение
@@ -33,12 +33,22 @@ class MessageCollector:
         """
         msg = event.message
         chat_id = event.chat_id
-        
+
+        # ДИАГНОСТИКА: логируем ВСЕ входящие сообщения
+        has_media_debug = bool(msg.photo or msg.video or msg.document or msg.voice)
+        has_text_debug = bool(msg.message and len(msg.message.strip()) > 0)
+        logger.info(
+            f"📥 Входящее: {chat_id}/{msg.id} "
+            f"grouped_id={msg.grouped_id} "
+            f"has_media={has_media_debug} has_text={has_text_debug} "
+            f"media_type={type(msg.media).__name__ if msg.media else None}"
+        )
+
         # Проверяем активность источника
         stmt = select(Source).where(Source.chat_id == chat_id)
         result = await self.db.execute(stmt)
         source = result.scalar_one_or_none()
-        
+
         if not source or not source.is_active:
             logger.debug(f"⏭️ Источник {chat_id} неактивен или не найден")
             return
