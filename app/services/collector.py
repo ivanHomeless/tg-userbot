@@ -4,6 +4,8 @@ from app.models.message import MessageQueue
 from app.models.source import Source
 from app.config import AWAIT_TEXT_TIMEOUT
 from datetime import datetime, timedelta
+from collections import defaultdict
+import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
@@ -12,12 +14,16 @@ logger = logging.getLogger(__name__)
 class MessageCollector:
     """
     Сборщик сообщений из источников
-    
+
     Умная логика:
     - Склеивает медиа и текст, если они пришли раздельно
     - Ждёт текст после медиа в течение AWAIT_TEXT_TIMEOUT секунд
+    - Использует Lock для синхронизации обработки альбомов
     """
-    
+
+    # Словарь Lock'ов по grouped_id (класс-уровень для всех инстансов)
+    _album_locks = defaultdict(asyncio.Lock)
+
     def __init__(self, db_session: AsyncSession):
         self.db = db_session
     
@@ -140,40 +146,42 @@ class MessageCollector:
         album_msg = result.scalar_one_or_none()
 
         if album_msg:
-            # Проверяем: есть ли уже текст в этом альбоме?
-            stmt_check = select(MessageQueue).where(
-                and_(
-                    MessageQueue.source_id == chat_id,
-                    MessageQueue.grouped_id == album_msg.grouped_id,
-                    MessageQueue.original_text.isnot(None),
-                    MessageQueue.original_text != ''
-                )
-            ).limit(1)
-            result_check = await self.db.execute(stmt_check)
-            has_text = result_check.scalar_one_or_none()
-
-            if not has_text:
-                # ✅ Альбом без текста — прикрепляем текст к первому медиа
-                stmt_first = select(MessageQueue).where(
+            # Используем Lock для синхронизации привязки текста к альбому
+            async with self._album_locks[album_msg.grouped_id]:
+                # Проверяем: есть ли уже текст в этом альбоме?
+                stmt_check = select(MessageQueue).where(
                     and_(
                         MessageQueue.source_id == chat_id,
-                        MessageQueue.grouped_id == album_msg.grouped_id
+                        MessageQueue.grouped_id == album_msg.grouped_id,
+                        MessageQueue.original_text.isnot(None),
+                        MessageQueue.original_text != ''
                     )
-                ).order_by(MessageQueue.message_id).limit(1)
-                result_first = await self.db.execute(stmt_first)
-                first_media = result_first.scalar_one_or_none()
+                ).limit(1)
+                result_check = await self.db.execute(stmt_check)
+                has_text = result_check.scalar_one_or_none()
 
-                if first_media:
-                    first_media.original_text = msg.message
-                    first_media.linked_message_id = msg.id
-                    # Сбрасываем таймер альбома (даём время на сборку)
-                    await self._update_album_collected_at(chat_id, album_msg.grouped_id)
-                    await self.db.commit()
-                    logger.info(
-                        f"🔗 Склеено: альбом grouped_id={album_msg.grouped_id} "
-                        f"+ текст {msg.id}"
-                    )
-                    return
+                if not has_text:
+                    # ✅ Альбом без текста — прикрепляем текст к первому медиа
+                    stmt_first = select(MessageQueue).where(
+                        and_(
+                            MessageQueue.source_id == chat_id,
+                            MessageQueue.grouped_id == album_msg.grouped_id
+                        )
+                    ).order_by(MessageQueue.message_id).limit(1)
+                    result_first = await self.db.execute(stmt_first)
+                    first_media = result_first.scalar_one_or_none()
+
+                    if first_media:
+                        first_media.original_text = msg.message
+                        first_media.linked_message_id = msg.id
+                        # Сбрасываем таймер альбома (даём время на сборку)
+                        await self._update_album_collected_at(chat_id, album_msg.grouped_id)
+                        await self.db.commit()
+                        logger.info(
+                            f"🔗 Склеено: альбом grouped_id={album_msg.grouped_id} "
+                            f"+ текст {msg.id}"
+                        )
+                        return
 
         # 3. Обычное текстовое сообщение
         queue_msg = MessageQueue(
@@ -199,28 +207,46 @@ class MessageCollector:
         else:
             rewrite_status = 'pending'
 
-        queue_msg = MessageQueue(
-            source_id=chat_id,
-            message_id=msg.id,
-            grouped_id=msg.grouped_id,
-            original_text=msg.message,
-            media_type=self._get_media_type(msg),
-            media_file_id=file_id,
-            media_access_hash=access_hash,
-            media_file_reference=file_ref,
-            original_chat_id=chat_id,
-            original_message_id=msg.id,
-            rewrite_status=rewrite_status,  # ← ИЗМЕНЕНО
-            awaiting_text=False
-        )
-        self.db.add(queue_msg)
-        await self.db.commit()
-
-        # ВАЖНО: Если это часть альбома — обновляем collected_at у ВСЕХ медиа альбома
+        # Для альбомов используем Lock для синхронизации
         if msg.grouped_id:
-            await self._update_album_collected_at(chat_id, msg.grouped_id)
-            logger.info(f"✅ Медиа+текст (альбом): {chat_id}/{msg.id} grouped_id={msg.grouped_id}")
+            async with self._album_locks[msg.grouped_id]:
+                queue_msg = MessageQueue(
+                    source_id=chat_id,
+                    message_id=msg.id,
+                    grouped_id=msg.grouped_id,
+                    original_text=msg.message,
+                    media_type=self._get_media_type(msg),
+                    media_file_id=file_id,
+                    media_access_hash=access_hash,
+                    media_file_reference=file_ref,
+                    original_chat_id=chat_id,
+                    original_message_id=msg.id,
+                    rewrite_status=rewrite_status,
+                    awaiting_text=False
+                )
+                self.db.add(queue_msg)
+                await self.db.commit()
+
+                # Обновляем collected_at у ВСЕХ медиа альбома
+                await self._update_album_collected_at(chat_id, msg.grouped_id)
+                logger.info(f"✅ Медиа+текст (альбом): {chat_id}/{msg.id} grouped_id={msg.grouped_id}")
         else:
+            queue_msg = MessageQueue(
+                source_id=chat_id,
+                message_id=msg.id,
+                grouped_id=None,
+                original_text=msg.message,
+                media_type=self._get_media_type(msg),
+                media_file_id=file_id,
+                media_access_hash=access_hash,
+                media_file_reference=file_ref,
+                original_chat_id=chat_id,
+                original_message_id=msg.id,
+                rewrite_status=rewrite_status,
+                awaiting_text=False
+            )
+            self.db.add(queue_msg)
+            await self.db.commit()
             logger.info(f"✅ Медиа+текст (одиночное): {chat_id}/{msg.id}")
 
     async def _handle_media_without_text(self, msg, chat_id):
@@ -237,30 +263,31 @@ class MessageCollector:
         
         # Проверяем: это часть альбома?
         if msg.grouped_id:
-            # ✅ Часть альбома — сохраняем без ожидания
+            # ✅ Часть альбома — сохраняем без ожидания (с Lock для синхронизации)
             # Текст будет у ОДНОГО из медиа в альбоме (обычно первого)
-            queue_msg = MessageQueue(
-                source_id=chat_id,
-                message_id=msg.id,
-                grouped_id=msg.grouped_id,
-                original_text=None,
-                media_type=self._get_media_type(msg),
-                media_file_id=file_id,
-                media_access_hash=access_hash,
-                media_file_reference=file_ref,
-                original_chat_id=chat_id,
-                original_message_id=msg.id,
-                rewrite_status='skipped',  # рерайтить нечего
-                awaiting_text=False
-            )
-            
-            self.db.add(queue_msg)
-            await self.db.commit()
-            
-            # ВАЖНО: Обновляем collected_at у всех медиа альбома (сброс таймера)
-            await self._update_album_collected_at(chat_id, msg.grouped_id)
-            
-            logger.info(f"📸 Альбом медиа без текста: {chat_id}/{msg.id} grouped_id={msg.grouped_id}")
+            async with self._album_locks[msg.grouped_id]:
+                queue_msg = MessageQueue(
+                    source_id=chat_id,
+                    message_id=msg.id,
+                    grouped_id=msg.grouped_id,
+                    original_text=None,
+                    media_type=self._get_media_type(msg),
+                    media_file_id=file_id,
+                    media_access_hash=access_hash,
+                    media_file_reference=file_ref,
+                    original_chat_id=chat_id,
+                    original_message_id=msg.id,
+                    rewrite_status='skipped',  # рерайтить нечего
+                    awaiting_text=False
+                )
+
+                self.db.add(queue_msg)
+                await self.db.commit()
+
+                # ВАЖНО: Обновляем collected_at у всех медиа альбома (сброс таймера)
+                await self._update_album_collected_at(chat_id, msg.grouped_id)
+
+                logger.info(f"📸 Альбом медиа без текста: {chat_id}/{msg.id} grouped_id={msg.grouped_id}")
         else:
             # ❌ Одиночное медиа — ЖДЁМ текст
             awaiting_until = datetime.utcnow() + timedelta(seconds=AWAIT_TEXT_TIMEOUT)
