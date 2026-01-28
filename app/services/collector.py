@@ -29,7 +29,7 @@ class MessageCollector:
     _album_timers = {}
 
     # Timeout для сборки альбома (секунды после последнего медиа)
-    ALBUM_BUILD_TIMEOUT = 20
+    ALBUM_BUILD_TIMEOUT = 30
 
     def __init__(self, db_session: AsyncSession):
         self.db = db_session
@@ -47,7 +47,7 @@ class MessageCollector:
         msg = event.message
         chat_id = event.chat_id
 
-        # ДИАГНОСТИКА: логируем ВСЕ входящие сообщения
+        # ДИАГНОСТИКА: логируем ВСЕ входящие сообщения (теперь только INCOMING благодаря фильтру)
         has_media_debug = bool(msg.photo or msg.video or msg.document or msg.voice)
         has_text_debug = bool(msg.message and len(msg.message.strip()) > 0)
         logger.info(

@@ -149,7 +149,7 @@ class TGBot:
         # ============================================
         # ОБРАБОТЧИК ВХОДЯЩИХ СООБЩЕНИЙ
         # ============================================
-        @self.client.on(events.NewMessage())
+        @self.client.on(events.NewMessage(incoming=True))
         async def message_handler(event):
             """Сохраняет входящие сообщения в очередь"""
             try:
