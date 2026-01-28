@@ -135,9 +135,7 @@ class MessageProcessor:
         if not messages:
             return
 
-        logger.info(f"📦 Найдено {len(messages)} сообщений для сборки постов")
-
-        # Группируем по типам
+        # Группируем по типам (логирование после фильтрации)
         albums = {}  # grouped_id → {"messages": [...], "collected_at": datetime}
         singles = []
 
@@ -160,6 +158,7 @@ class MessageProcessor:
         # ВАЖНО: Telegram может доставлять большие альбомы (10 фото) медленно!
         ALBUM_TIMEOUT = 20  # секунд ожидания всех медиа в альбоме
 
+        albums_built = 0
         for gid, data in albums.items():
             msgs = data["messages"]
             collected_at = data["collected_at"]  # Теперь это ПОСЛЕДНИЙ collected_at
@@ -184,10 +183,17 @@ class MessageProcessor:
 
             # ✅ Все медиа альбома готовы — собираем
             await self._build_album_post(msgs)
+            albums_built += 1
 
         # Обрабатываем одиночные (сразу)
+        singles_built = 0
         for msg in singles:
             await self._build_single_post(msg)
+            singles_built += 1
+
+        # Логируем только если что-то реально собрали
+        if albums_built > 0 or singles_built > 0:
+            logger.info(f"📦 Собрано постов: {albums_built + singles_built} ({singles_built} одиночных, {albums_built} альбомов)")
 
 
     async def _count_album_members(self, grouped_id: int) -> int:

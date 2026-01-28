@@ -194,7 +194,7 @@ class TGBot:
                 await asyncio.sleep(15)
         
         async def background_post_builder():
-            """Сборка постов из обработанных сообщений (каждые 10 сек)"""
+            """Сборка постов из обработанных сообщений (каждые 5 сек)"""
             while True:
                 try:
                     async with post_builder_lock:
@@ -206,7 +206,7 @@ class TGBot:
                     break
                 except Exception as e:
                     logger.error(f"❌ Ошибка в post_builder: {e}", exc_info=True)
-                await asyncio.sleep(10)
+                await asyncio.sleep(5)  # Быстрая проверка для event-driven альбомов
         
         async def background_publisher():
             """Публикация готовых постов (каждые 15 секунд)"""

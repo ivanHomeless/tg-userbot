@@ -19,10 +19,17 @@ class MessageCollector:
     - Склеивает медиа и текст, если они пришли раздельно
     - Ждёт текст после медиа в течение AWAIT_TEXT_TIMEOUT секунд
     - Использует Lock для синхронизации обработки альбомов
+    - Использует таймеры для автоматической сборки альбомов
     """
 
     # Словарь Lock'ов по grouped_id (класс-уровень для всех инстансов)
     _album_locks = defaultdict(asyncio.Lock)
+
+    # Словарь таймеров для альбомов: grouped_id -> asyncio.Task
+    _album_timers = {}
+
+    # Timeout для сборки альбома (секунды после последнего медиа)
+    ALBUM_BUILD_TIMEOUT = 20
 
     def __init__(self, db_session: AsyncSession):
         self.db = db_session
@@ -315,15 +322,15 @@ class MessageCollector:
     async def _update_album_collected_at(self, chat_id: int, grouped_id: int):
         """
         Обновляет collected_at у всех медиа в альбоме
-        
+
         Это аналог Timer.cancel() + Timer.start() в старом коде:
         - Каждое новое медиа сбрасывает таймер
-        - Альбом собирается через 5 сек после ПОСЛЕДНЕГО медиа
+        - Альбом собирается через 20 сек после ПОСЛЕДНЕГО медиа
         """
         from sqlalchemy import update
-        
+
         now = datetime.utcnow()
-        
+
         stmt = update(MessageQueue).where(
             and_(
                 MessageQueue.source_id == chat_id,
@@ -331,12 +338,45 @@ class MessageCollector:
                 MessageQueue.ready_to_post == False
             )
         ).values(collected_at=now)
-        
+
         await self.db.execute(stmt)
         await self.db.commit()
-        
+
+        # Сброс/запуск таймера для автоматической сборки альбома
+        await self._schedule_album_build(grouped_id)
+
         logger.debug(f"⏱️  Альбом {grouped_id}: таймер сброшен")
-    
+
+    async def _schedule_album_build(self, grouped_id: int):
+        """
+        Сбрасывает и перезапускает таймер сборки альбома
+
+        Аналог Timer.cancel() + Timer.start() из старого кода
+        """
+        # Отменяем старый таймер (если есть)
+        if grouped_id in self._album_timers:
+            old_task = self._album_timers[grouped_id]
+            if not old_task.done():
+                old_task.cancel()
+                logger.debug(f"⏱️  Альбом {grouped_id}: старый таймер отменен")
+
+        # Создаем новый таймер
+        async def build_album_after_timeout():
+            try:
+                await asyncio.sleep(self.ALBUM_BUILD_TIMEOUT)
+                # Таймер сработал - НЕ пришло новое медиа за 20 секунд
+                # Триггерим сборку через флаг (background_post_builder подхватит)
+                logger.info(f"⏰ Альбом {grouped_id}: timeout истёк, готов к сборке")
+
+                # Можно установить флаг или просто обновить collected_at
+                # Background task подхватит при следующей проверке
+            except asyncio.CancelledError:
+                # Таймер отменен (пришло новое медиа)
+                logger.debug(f"⏱️  Альбом {grouped_id}: таймер отменен (новое медиа)")
+
+        task = asyncio.create_task(build_album_after_timeout())
+        self._album_timers[grouped_id] = task
+
     def _extract_media_data(self, msg):
         """Извлекает file_id, access_hash, file_reference из медиа"""
         file_id, access_hash, file_ref = None, None, None
