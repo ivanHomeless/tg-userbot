@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select, and_, or_, func
 from app.models.message import MessageQueue
 from app.models.post import Post, PostMedia
 from app.config import MEDIA_ONLY_CAPTION
@@ -166,17 +166,39 @@ class MessageProcessor:
             # Проверяем: прошло ли достаточно времени?
             elapsed = (now - collected_at).total_seconds()
 
-            if elapsed >= ALBUM_TIMEOUT:
-                # ✅ Достаточно времени — собираем
-                await self._build_album_post(msgs)
-            else:
+            if elapsed < ALBUM_TIMEOUT:
                 # ⏳ Ждём ещё (возможно, придёт ещё медиа)
                 logger.debug(f"⏳ Альбом {gid}: ждём ещё {ALBUM_TIMEOUT - elapsed:.1f}с")
+                continue
+
+            # Проверяем: нет ли ещё медиа с тем же grouped_id, которые не попали в выборку
+            # (например, awaiting_text=True или rewrite_status ещё не ready)
+            total_in_db = await self._count_album_members(gid)
+            if total_in_db > len(msgs):
+                logger.info(
+                    f"⏳ Альбом {gid}: в выборке {len(msgs)}, в БД {total_in_db} — "
+                    f"ждём остальные"
+                )
+                continue
+
+            # ✅ Все медиа альбома готовы — собираем
+            await self._build_album_post(msgs)
 
         # Обрабатываем одиночные (сразу)
         for msg in singles:
             await self._build_single_post(msg)
 
+
+    async def _count_album_members(self, grouped_id: int) -> int:
+        """Считает ВСЕ сообщения альбома в БД (включая не готовые к сборке)"""
+        stmt = select(func.count()).select_from(MessageQueue).where(
+            and_(
+                MessageQueue.grouped_id == grouped_id,
+                MessageQueue.ready_to_post == False
+            )
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar() or 0
 
     async def _build_album_post(self, messages: list[MessageQueue]):
         """Создаёт пост из альбома (несколько медиа)"""

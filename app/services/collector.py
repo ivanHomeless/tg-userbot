@@ -56,7 +56,7 @@ class MessageCollector:
             return
         
         # Определяем тип сообщения
-        has_media = msg.photo or msg.video or msg.document
+        has_media = msg.photo or msg.video or msg.document or msg.voice
         has_text = msg.message and len(msg.message.strip()) > 0
         
         # СЛУЧАЙ 1: Текст без медиа
@@ -80,12 +80,15 @@ class MessageCollector:
     async def _handle_text_message(self, msg, chat_id):
         """
         Обработка текста без медиа
-        
-        Проверяем: есть ли медиа, которое ждёт текст
+
+        Проверяем:
+        1. Есть ли одиночное медиа, которое ждёт текст (awaiting_text)
+        2. Есть ли недавний альбом без текста от этого источника
+        3. Иначе — обычное текстовое сообщение
         """
         now = datetime.utcnow()
-        
-        # Ищем недавнее медиа, которое ждёт текст
+
+        # 1. Ищем одиночное медиа, которое ждёт текст
         stmt = select(MessageQueue).where(
             and_(
                 MessageQueue.source_id == chat_id,
@@ -94,31 +97,86 @@ class MessageCollector:
                 MessageQueue.message_id < msg.id
             )
         ).order_by(MessageQueue.message_id.desc()).limit(1)
-        
+
         result = await self.db.execute(stmt)
         media_msg = result.scalar_one_or_none()
-        
+
         if media_msg:
-            # ✅ Склеиваем с медиа
+            # ✅ Склеиваем с одиночным медиа
             media_msg.original_text = msg.message
             media_msg.awaiting_text = False
             media_msg.linked_message_id = msg.id
             media_msg.rewrite_status = 'pending'
-            
+
             await self.db.commit()
             logger.info(f"🔗 Склеено: медиа {media_msg.message_id} + текст {msg.id}")
-        else:
-            # ❌ Это просто текстовое сообщение
-            queue_msg = MessageQueue(
-                source_id=chat_id,
-                message_id=msg.id,
-                original_text=msg.message,
-                media_type=None,
-                rewrite_status='pending'
+            return
+
+        # 2. Ищем недавний альбом без текста от этого источника
+        album_cutoff = now - timedelta(seconds=AWAIT_TEXT_TIMEOUT)
+
+        # Находим любое медиа из недавнего альбома
+        stmt = select(MessageQueue).where(
+            and_(
+                MessageQueue.source_id == chat_id,
+                MessageQueue.grouped_id.isnot(None),
+                MessageQueue.ready_to_post == False,
+                MessageQueue.collected_at > album_cutoff,
+                MessageQueue.message_id < msg.id
             )
-            self.db.add(queue_msg)
-            await self.db.commit()
-            logger.info(f"✅ Текст без медиа: {chat_id}/{msg.id}")
+        ).order_by(MessageQueue.collected_at.desc()).limit(1)
+
+        result = await self.db.execute(stmt)
+        album_msg = result.scalar_one_or_none()
+
+        if album_msg:
+            # Проверяем: есть ли уже текст в этом альбоме?
+            stmt_check = select(MessageQueue).where(
+                and_(
+                    MessageQueue.source_id == chat_id,
+                    MessageQueue.grouped_id == album_msg.grouped_id,
+                    MessageQueue.original_text.isnot(None),
+                    MessageQueue.original_text != ''
+                )
+            ).limit(1)
+            result_check = await self.db.execute(stmt_check)
+            has_text = result_check.scalar_one_or_none()
+
+            if not has_text:
+                # ✅ Альбом без текста — прикрепляем текст к первому медиа
+                stmt_first = select(MessageQueue).where(
+                    and_(
+                        MessageQueue.source_id == chat_id,
+                        MessageQueue.grouped_id == album_msg.grouped_id
+                    )
+                ).order_by(MessageQueue.message_id).limit(1)
+                result_first = await self.db.execute(stmt_first)
+                first_media = result_first.scalar_one_or_none()
+
+                if first_media:
+                    first_media.original_text = msg.message
+                    first_media.linked_message_id = msg.id
+                    # Сбрасываем таймер альбома (даём время на сборку)
+                    await self._update_album_collected_at(chat_id, album_msg.grouped_id)
+                    await self.db.commit()
+                    logger.info(
+                        f"🔗 Склеено: альбом grouped_id={album_msg.grouped_id} "
+                        f"+ текст {msg.id}"
+                    )
+                    return
+
+        # 3. Обычное текстовое сообщение
+        queue_msg = MessageQueue(
+            source_id=chat_id,
+            message_id=msg.id,
+            grouped_id=msg.grouped_id,
+            original_text=msg.message,
+            media_type=None,
+            rewrite_status='pending'
+        )
+        self.db.add(queue_msg)
+        await self.db.commit()
+        logger.info(f"✅ Текст без медиа: {chat_id}/{msg.id} (grouped_id={msg.grouped_id})")
 
     async def _handle_media_with_text(self, msg, chat_id):
         """Обработка медиа + текст (обычный случай)"""
@@ -151,9 +209,9 @@ class MessageCollector:
         # ВАЖНО: Если это часть альбома — обновляем collected_at у ВСЕХ медиа альбома
         if msg.grouped_id:
             await self._update_album_collected_at(chat_id, msg.grouped_id)
-            logger.info(f"✅ Медиа+текст (альбом, таймер сброшен): {chat_id}/{msg.id}")
+            logger.info(f"✅ Медиа+текст (альбом): {chat_id}/{msg.id} grouped_id={msg.grouped_id}")
         else:
-            logger.info(f"✅ Медиа+текст: {chat_id}/{msg.id}")
+            logger.info(f"✅ Медиа+текст (одиночное): {chat_id}/{msg.id}")
 
     async def _handle_media_without_text(self, msg, chat_id):
         """
@@ -192,7 +250,7 @@ class MessageCollector:
             # ВАЖНО: Обновляем collected_at у всех медиа альбома (сброс таймера)
             await self._update_album_collected_at(chat_id, msg.grouped_id)
             
-            logger.debug(f"📸 Альбом: медиа #{msg.id} (grouped_id={msg.grouped_id})")
+            logger.info(f"📸 Альбом медиа без текста: {chat_id}/{msg.id} grouped_id={msg.grouped_id}")
         else:
             # ❌ Одиночное медиа — ЖДЁМ текст
             awaiting_until = datetime.utcnow() + timedelta(seconds=AWAIT_TEXT_TIMEOUT)
@@ -215,7 +273,7 @@ class MessageCollector:
             
             self.db.add(queue_msg)
             await self.db.commit()
-            logger.info(f"⏳ Одиночное медиа без текста (ждём {AWAIT_TEXT_TIMEOUT}с): {chat_id}/{msg.id}")
+            logger.info(f"⏳ Одиночное медиа без текста (ждём {AWAIT_TEXT_TIMEOUT}с): {chat_id}/{msg.id} grouped_id=None")
     
     async def _update_album_collected_at(self, chat_id: int, grouped_id: int):
         """

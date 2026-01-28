@@ -192,7 +192,7 @@ class TGBot:
                 await asyncio.sleep(15)
         
         async def background_post_builder():
-            """Сборка постов из обработанных сообщений (каждые 45 сек)"""
+            """Сборка постов из обработанных сообщений (каждые 10 сек)"""
             while True:
                 try:
                     async with SessionLocal() as session:
@@ -203,10 +203,10 @@ class TGBot:
                     break
                 except Exception as e:
                     logger.error(f"❌ Ошибка в post_builder: {e}", exc_info=True)
-                await asyncio.sleep(45)
+                await asyncio.sleep(10)
         
         async def background_publisher():
-            """Публикация готовых постов (каждую минуту)"""
+            """Публикация готовых постов (каждые 15 секунд)"""
             while True:
                 try:
                     async with SessionLocal() as session:
@@ -217,7 +217,7 @@ class TGBot:
                     break
                 except Exception as e:
                     logger.error(f"❌ Ошибка в publisher: {e}", exc_info=True)
-                await asyncio.sleep(60)
+                await asyncio.sleep(15)
         
         # ============================================
         # ЗАПУСК ВСЕХ ЗАДАЧ ПАРАЛЛЕЛЬНО
