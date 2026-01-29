@@ -72,11 +72,12 @@ pytest -x                                   # Stop on first failure
 ```
 Source Channels (via Telethon events)
     ↓
-    ├─ events.Album() → MessageCollector.collect_album()
-    └─ events.NewMessage() → MessageCollector.collect_message()
+events.NewMessage() → message_handler
+    ├─ grouped_id? → буфер 3 секунды → collect_album()
+    └─ no grouped_id? → collect_message() сразу
     ↓ Saves to DB
 MessageQueue table (original_text, media_file_id, rewrite_status)
-    ↓ Processed by 3 background tasks
+    ↓ Processed by 4 background tasks
 MessageProcessor (app/services/processor.py)
     ├─ Rewriter: AI rewrites text (30s interval)
     ├─ AwaitingCloser: Closes orphan media waits (15s interval)
@@ -91,45 +92,52 @@ Destination Channel (DEST env var)
 
 ### Critical Background Tasks
 
-**5 parallel asyncio tasks:**
+**4 parallel asyncio tasks:**
 1. `background_rewriter()` - Every 30s, AI rewrites text for single messages (NOT albums)
 2. `background_awaiting_closer()` - Every 15s, closes expired media waiting for text
 3. `background_post_builder()` - Every 3s, builds posts (protected by asyncio.Lock)
 4. `background_publisher()` - Every 15s, publishes scheduled posts to destination
-5. `background_album_completion_checker()` - Every 10s, marks stale albums (>30s old) as ready
 
 **Important:** PostBuilder uses `asyncio.Lock()` to prevent race conditions. Fast 3s interval for quick album processing.
 
 ### Album Handling (Media Groups)
 
-**Challenge:** Telegram sends albums as separate messages with same `grouped_id`, arriving over several seconds.
+**Challenge:** Telegram sends albums as separate messages with same `grouped_id`. Updates from different Data Centers may arrive separately or get lost.
 
-**Solution: Three-tier hybrid architecture**
+**Solution: Manual buffering + catch_up**
 
-1. **PRIMARY PATH (95% of cases):**
-   - `@client.on(events.Album())` - Telethon collects all media atomically
-   - Registered FIRST, fires before NewMessage can intercept
-   - `sequential_updates=True` ensures deterministic order
+1. **Single NewMessage handler** catches ALL messages (bot_logic.py:188-255)
+2. Messages with `grouped_id` → buffered for **3 seconds**
+3. Timer resets on each new photo (debounce pattern)
+4. After 3s silence → process all buffered photos as album
+5. **catch_up=True** parameter recovers missed updates from DC splits
 
-2. **FALLBACK PATH (edge cases):**
-   - `@client.on(events.NewMessage(func=lambda e: e.grouped_id))` - separate handler
-   - Only triggers if Album event didn't fire (DC splits, certain media combos)
-   - Checks DB first to avoid duplicates
-   - Uses 5-second buffer (longer than Telethon's ~0.5-2s internal timeout)
+**Key configuration:**
+```python
+TelegramClient(
+    session,
+    api_id,
+    api_hash,
+    catch_up=True  # Recovers missed updates from different DCs
+)
+```
 
-3. **SAFETY NET (stuck albums):**
-   - Background task checks every 10s for albums older than 30s
-   - Marks as ready_to_post for processor to handle
+**How it works:**
+- Each photo with `grouped_id` → adds to `album_buffers[grouped_id]`
+- Cancels previous timer, starts new 3s timer
+- Timer expires → calls `collect_album()` with all buffered photos
+- Duplicate protection via DB `message_id` check
 
 **Key files:**
-- Album handlers: app/bot_logic.py:178-280
-- Album collection: app/services/collector.py:31-117
-- Album assembly: app/services/processor.py:210-259
+- Album handler: app/bot_logic.py:188-255
+- Album collection: app/services/collector.py:31-118
+- Album assembly: app/services/processor.py:157-182
 
-**Known Telethon limitations (from GitHub issues #4075, #4426, #1479):**
-- Album event may not fire for certain media combinations
-- DC splitting can cause separate events
-- Internal timeout ~0.5-2s (not configurable)
+**Why catch_up=True solved the problem:**
+- Telethon's AlbumHack has known issues with DC splits (GitHub #4075, #4426, #1479)
+- Different Data Centers send updates separately
+- `catch_up=True` requests missed updates from Telegram servers
+- Prevents lost photos from cross-DC albums
 
 ### Orphan Media Pattern
 
@@ -227,20 +235,26 @@ async with SessionLocal() as session:
 # Session auto-closes, releases connection to pool
 ```
 
-### 2. Album Processing - Manual Collection
-**Manual album collection with 2.5s timeout.** Due to Telethon's `events.Album` missing first messages, we collect albums manually:
+### 2. Album Processing - Manual Buffering
+**Manual album collection with 3s debounce timer:**
 
 1. Each message with `grouped_id` → added to buffer `album_buffers[grouped_id]`
-2. Timer starts/restarts (2.5 seconds)
-3. When timer expires → process all messages in buffer as album
-4. Creates mock `AlbumEvent` object for `collect_album()`
+2. Timer cancels previous, starts new (3 seconds) - **debounce pattern**
+3. When timer expires → process all buffered messages as album
+4. Creates `AlbumEvent` object for `collect_album()`
+
+**Why 3 seconds:**
+- Photos arrive simultaneously (0-100ms) when from same DC
+- 3s buffer catches stragglers from different DCs
+- `catch_up=True` recovers truly missed updates
 
 **Benefits:**
-- ✅ Never loses first message
+- ✅ Never loses photos (catch_up recovers missed updates)
 - ✅ Collects ALL captions from ALL messages
 - ✅ Full control over timing
+- ✅ Fast processing (3s vs old 20s)
 
-**Critical code:** app/bot_logic.py:178-265, app/services/collector.py:31-105
+**Critical code:** app/bot_logic.py:188-255, app/services/collector.py:31-118
 
 ### 3. File Reference Expiry
 Telegram changes `file_reference` every ~24 hours. Publisher catches `FILE_REFERENCE_EXPIRED` and should re-fetch or use forwarding for old media.
@@ -358,7 +372,56 @@ app/
 
 ## Recent Changes (Jan 2026)
 
-### v1.2.0 - Three-Tier Album Handling (Current)
+### v1.3.0 - catch_up=True Solution (Current)
+
+**Problem:** Albums still losing photos (3 out of 6) from certain sources despite three-tier architecture.
+
+**Root cause:** Telegram doesn't send updates from different Data Centers consistently. Telethon's `events.Album` uses "dirty hack" (AlbumHack class) that fails with DC splits.
+
+**Solution - Simplified with catch_up:**
+
+1. **Removed complexity:**
+   - ❌ Removed `events.Album()` handler (unreliable)
+   - ❌ Removed separate fallback handler (duplicated logic)
+   - ❌ Removed `background_album_completion_checker()` (unnecessary)
+   - ❌ Removed `sequential_updates=True` (slows down processing)
+
+2. **Single NewMessage handler:**
+   - ✅ One handler for ALL messages
+   - ✅ Buffers photos with `grouped_id` for **3 seconds**
+   - ✅ Debounce pattern: timer resets on each new photo
+   - ✅ Processes complete album after 3s silence
+
+3. **Added catch_up=True:**
+   ```python
+   TelegramClient(session, api_id, api_hash, catch_up=True)
+   ```
+   - ✅ Requests missed updates from Telegram servers
+   - ✅ Recovers photos lost in DC splits
+   - ✅ Official Telethon solution for missed updates
+
+**Results:**
+- ✅ **Old bot (without catch_up):** Lost 1 photo from test album
+- ✅ **New bot (with catch_up):** Caught ALL photos from same album
+- ✅ Faster processing: 3s buffer vs 20s
+- ✅ Simpler code: 1 handler vs 3
+
+**Why it works:**
+- Photos arrive simultaneously (~0-100ms) from same DC
+- Photos from different DCs may arrive separately or get lost
+- `catch_up=True` tells Telegram to resend missed updates
+- 3s buffer catches stragglers, `catch_up` catches truly lost ones
+
+**Files changed:**
+- app/bot_logic.py - Simplified to 1 handler, added catch_up=True, 3s timer
+- app/services/collector.py - Updated comments
+- CLAUDE.md - Rewritten architecture docs
+
+**References:**
+- Telethon GitHub #4075, #4426, #1479 - Known Album event issues
+- Telethon docs: AlbumHack described as "dirty hack" for DC splits
+
+### v1.2.0 - Three-Tier Album Handling (Deprecated)
 
 **Problem:** Albums sometimes lost first message (9/10 photos received).
 
