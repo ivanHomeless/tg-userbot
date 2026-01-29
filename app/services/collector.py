@@ -15,7 +15,7 @@ class MessageCollector:
     Сборщик сообщений из источников
 
     Два режима обработки:
-    1. collect_album() - обрабатывает альбомы через events.Album (Telethon сам собирает все медиа)
+    1. collect_album() - обрабатывает альбомы (собранные вручную через NewMessage + буфер)
     2. collect_message() - обрабатывает одиночные сообщения
 
     Умная логика:
@@ -30,9 +30,9 @@ class MessageCollector:
 
     async def collect_album(self, event):
         """
-        Обработка альбома через events.Album
+        Обработка альбома (собранного вручную)
 
-        Telethon автоматически собрал все медиа в event.messages
+        Фото собраны через NewMessage handler + буфер в bot_logic
         """
         chat_id = event.chat_id
         messages = event.messages  # Список всех медиа в альбоме
@@ -52,12 +52,21 @@ class MessageCollector:
 
         grouped_id = messages[0].grouped_id
 
+        # Диагностика: логируем ID всех сообщений в альбоме и временной разброс
+        msg_ids = [msg.id for msg in messages]
+        msg_dates = [msg.date for msg in messages]
+        time_span = (max(msg_dates) - min(msg_dates)).total_seconds() if len(msg_dates) > 1 else 0
+
         logger.info(
             f"📸 Альбом: {chat_id} grouped_id={grouped_id} "
-            f"медиа={len(messages)} текстов={len(captions)}"
+            f"медиа={len(messages)} текстов={len(captions)} "
+            f"time_span={time_span:.2f}s msg_ids={msg_ids}"
         )
 
         # Сохраняем все медиа альбома
+        saved_count = 0
+        duplicates = []
+
         for msg in messages:
             # Проверяем дубликат
             stmt = select(MessageQueue).where(
@@ -68,7 +77,8 @@ class MessageCollector:
             existing = result.scalar_one_or_none()
 
             if existing:
-                logger.debug(f"⏭️ Дубликат медиа из альбома: {chat_id}/{msg.id}")
+                logger.warning(f"⚠️ Дубликат медиа из альбома: {chat_id}/{msg.id}")
+                duplicates.append(msg.id)
                 continue
 
             file_id, access_hash, file_ref = self._extract_media_data(msg)
@@ -92,13 +102,20 @@ class MessageCollector:
             )
 
             self.db.add(queue_msg)
+            saved_count += 1
 
         await self.db.commit()
 
         logger.info(
             f"✅ Альбом сохранен: grouped_id={grouped_id}, "
-            f"{len(messages)} медиа, текстов={len(captions)}"
+            f"получено={len(messages)} сохранено={saved_count} дубликатов={len(duplicates)} текстов={len(captions)}"
         )
+
+        if duplicates:
+            logger.info(
+                f"ℹ️ Пропущены дубликаты в альбоме {grouped_id}: {duplicates} "
+                f"(уже были обработаны ранее)"
+            )
 
     async def collect_message(self, event):
         """

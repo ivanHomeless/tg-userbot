@@ -28,7 +28,12 @@ class TGBot:
     """
     
     def __init__(self):
-        self.client = TelegramClient(SESSION_NAME, API_ID, API_HASH, sequential_updates=True)
+        self.client = TelegramClient(
+            SESSION_NAME,
+            API_ID,
+            API_HASH,
+            catch_up=True  # Догонять пропущенные updates
+        )
         self.dest_chat_id = None  # Будет заполнено при старте
     
     async def setup(self):
@@ -176,54 +181,86 @@ class TGBot:
         await self.join_sources()
         
         # ============================================
-        # ОБРАБОТЧИКИ ВХОДЯЩИХ СООБЩЕНИЙ
+        # ОБРАБОТЧИК СООБЩЕНИЙ
         # ============================================
 
-        @self.client.on(events.Album())
-        async def album_handler(event):
-            """Обработчик альбомов - Telethon сам собирает все медиа"""
-            # Игнорируем альбомы из канала назначения
-            if self.dest_chat_id and event.chat_id == self.dest_chat_id:
-                logger.debug(f"⏭️ Пропущен альбом из DEST канала: {event.chat_id}")
-                return
-
-            # Проверяем активность источника до создания collector
-            if not await self.is_source_active(event.chat_id):
-                logger.debug(f"⏭️ Источник {event.chat_id} неактивен или не найден")
-                return
-
-            try:
-                async with SessionLocal() as session:
-                    collector = MessageCollector(session)
-                    await collector.collect_album(event)
-            except Exception as e:
-                logger.error(f"❌ Ошибка в album_handler: {e}", exc_info=True)
+        # Буферы для сборки альбомов
+        album_buffers = {}
+        album_timers = {}
 
         @self.client.on(events.NewMessage())
         async def message_handler(event):
-            """Обработчик одиночных сообщений (не альбомов)"""
-            # Игнорируем сообщения из канала назначения (наши публикации)
+            """Единственный обработчик для ВСЕХ сообщений"""
+
+            # DEST filtering
             if self.dest_chat_id and event.chat_id == self.dest_chat_id:
-                logger.debug(f"⏭️ Пропущено сообщение из DEST канала: {event.chat_id}/{event.message.id}")
                 return
 
-            # Пропускаем альбомы (они обрабатываются в album_handler)
-            if event.message.grouped_id:
-                logger.debug(f"⏭️ Пропущен альбом в NewMessage (обработан в Album): {event.chat_id}/{event.message.id}")
-                return
-
-            # Проверяем активность источника до создания collector
+            # Source validation
             if not await self.is_source_active(event.chat_id):
-                logger.debug(f"⏭️ Источник {event.chat_id} неактивен или не найден")
                 return
 
-            try:
-                async with SessionLocal() as session:
-                    collector = MessageCollector(session)
-                    await collector.collect_message(event)
-            except Exception as e:
-                logger.error(f"❌ Ошибка в message_handler: {e}", exc_info=True)
-        
+            msg = event.message
+            grouped_id = msg.grouped_id
+
+            # АЛЬБОМ: буферизуем 3 секунды
+            if grouped_id:
+                if grouped_id not in album_buffers:
+                    album_buffers[grouped_id] = []
+                    logger.info(f"📥 ПЕРВОЕ фото альбома: msg_id={msg.id} grouped_id={grouped_id}")
+
+                album_buffers[grouped_id].append(msg)
+                current_count = len(album_buffers[grouped_id])
+
+                logger.info(
+                    f"📥 Фото альбома: msg_id={msg.id} grouped_id={grouped_id} | "
+                    f"В буфере: {current_count} фото | Таймер: сброшен, новый отсчет 3с"
+                )
+
+                # Cancel previous timer
+                if grouped_id in album_timers:
+                    album_timers[grouped_id].cancel()
+
+                # Start new 3-second timer
+                async def process_album():
+                    await asyncio.sleep(3.0)
+
+                    if grouped_id in album_buffers:
+                        messages = album_buffers.pop(grouped_id)
+                        album_timers.pop(grouped_id, None)
+
+                        msg_ids = [m.id for m in messages]
+                        logger.info(
+                            f"⏰ ТАЙМЕР ИСТЁК (3с): grouped_id={grouped_id} | "
+                            f"Собрано {len(messages)} фото | msg_ids={msg_ids}"
+                        )
+
+                        # Create album event
+                        class AlbumEvent:
+                            def __init__(self, chat_id, messages):
+                                self.chat_id = chat_id
+                                self.messages = messages
+
+                        album_event = AlbumEvent(event.chat_id, messages)
+
+                        try:
+                            async with SessionLocal() as session:
+                                collector = MessageCollector(session)
+                                await collector.collect_album(album_event)
+                        except Exception as e:
+                            logger.error(f"❌ Ошибка обработки альбома {grouped_id}: {e}", exc_info=True)
+
+                album_timers[grouped_id] = asyncio.create_task(process_album())
+
+            # ОДИНОЧНОЕ СООБЩЕНИЕ: обрабатываем сразу
+            else:
+                try:
+                    async with SessionLocal() as session:
+                        collector = MessageCollector(session)
+                        await collector.collect_message(event)
+                except Exception as e:
+                    logger.error(f"❌ Ошибка обработки сообщения: {e}", exc_info=True)
+
         # ============================================
         # ФОНОВЫЕ ЗАДАЧИ
         # ============================================
@@ -271,7 +308,7 @@ class TGBot:
                     break
                 except Exception as e:
                     logger.error(f"❌ Ошибка в post_builder: {e}", exc_info=True)
-                await asyncio.sleep(3)  # Быстрая обработка альбомов (events.Album собирает сразу)
+                await asyncio.sleep(3)
         
         async def background_publisher():
             """Публикация готовых постов (каждые 15 секунд)"""
@@ -286,7 +323,7 @@ class TGBot:
                 except Exception as e:
                     logger.error(f"❌ Ошибка в publisher: {e}", exc_info=True)
                 await asyncio.sleep(15)
-        
+
         # ============================================
         # ЗАПУСК ВСЕХ ЗАДАЧ ПАРАЛЛЕЛЬНО
         # ============================================

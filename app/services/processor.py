@@ -154,19 +154,16 @@ class MessageProcessor:
             else:
                 singles.append(msg)
 
-        # Обрабатываем альбомы (СРАЗУ, без ожидания - events.Album уже собрал все медиа)
-        # Проверяем только что все медиа альбома в выборке
+        # Обрабатываем альбомы сразу
         albums_built = 0
         for gid, data in albums.items():
             msgs = data["messages"]
 
             # Проверяем: нет ли ещё медиа с тем же grouped_id, которые не попали в выборку
-            # (например, rewrite_status ещё не 'skipped')
             total_in_db = await self._count_album_members(gid)
             if total_in_db > len(msgs):
                 logger.debug(
-                    f"⏳ Альбом {gid}: в выборке {len(msgs)}, в БД {total_in_db} — "
-                    f"ждём остальные"
+                    f"⏳ Альбом {gid}: в выборке {len(msgs)}, в БД {total_in_db} — ждём остальные"
                 )
                 continue
 

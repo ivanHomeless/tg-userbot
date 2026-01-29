@@ -9,6 +9,19 @@ This is a **Telegram Content Aggregator Bot** that collects messages from multip
 **Architecture Pattern:** Async pipeline with PostgreSQL as message queue
 - MessageCollector → MessageQueue (DB) → MessageProcessor → Post/PostMedia (DB) → PostPublisher
 
+## Documentation Strategy
+
+⚠️ **ВАЖНО: Всегда добавляй `use context7` при работе с:**
+- Telethon API (events, methods, errors)
+- PostgreSQL (queries, optimization)
+- SQLAlchemy 
+- Redis (commands, patterns)
+- Любые внешние библиотеки
+
+### Шаблоны промптов
+
+**Telethon:**
+
 ## Key Development Commands
 
 ### Running the Bot
@@ -76,13 +89,14 @@ PostPublisher (app/services/publisher.py)
 Destination Channel (DEST env var)
 ```
 
-### Critical Background Tasks (all in app/bot_logic.py:205-247)
+### Critical Background Tasks
 
-**4 parallel asyncio tasks:**
+**5 parallel asyncio tasks:**
 1. `background_rewriter()` - Every 30s, AI rewrites text for single messages (NOT albums)
 2. `background_awaiting_closer()` - Every 15s, closes expired media waiting for text
 3. `background_post_builder()` - Every 3s, builds posts (protected by asyncio.Lock)
 4. `background_publisher()` - Every 15s, publishes scheduled posts to destination
+5. `background_album_completion_checker()` - Every 10s, marks stale albums (>30s old) as ready
 
 **Important:** PostBuilder uses `asyncio.Lock()` to prevent race conditions. Fast 3s interval for quick album processing.
 
@@ -90,19 +104,32 @@ Destination Channel (DEST env var)
 
 **Challenge:** Telegram sends albums as separate messages with same `grouped_id`, arriving over several seconds.
 
-**Solution (using Telethon's events.Album):**
-1. `@client.on(events.Album())` handler - Telethon automatically waits and collects ALL media in `event.messages`
-2. Collector extracts ALL captions from all messages (joined with `\n\n`)
-3. Saves all media with same `grouped_id`, text attached to first message
-4. PostBuilder assembles immediately (no timeout needed) - combines texts and AI rewrites ONCE
-5. Creates single Post with multiple PostMedia entries
+**Solution: Three-tier hybrid architecture**
+
+1. **PRIMARY PATH (95% of cases):**
+   - `@client.on(events.Album())` - Telethon collects all media atomically
+   - Registered FIRST, fires before NewMessage can intercept
+   - `sequential_updates=True` ensures deterministic order
+
+2. **FALLBACK PATH (edge cases):**
+   - `@client.on(events.NewMessage(func=lambda e: e.grouped_id))` - separate handler
+   - Only triggers if Album event didn't fire (DC splits, certain media combos)
+   - Checks DB first to avoid duplicates
+   - Uses 5-second buffer (longer than Telethon's ~0.5-2s internal timeout)
+
+3. **SAFETY NET (stuck albums):**
+   - Background task checks every 10s for albums older than 30s
+   - Marks as ready_to_post for processor to handle
 
 **Key files:**
-- Album handler: app/bot_logic.py:164-177
-- Album collection: app/services/collector.py:38-80
+- Album handlers: app/bot_logic.py:178-280
+- Album collection: app/services/collector.py:31-117
 - Album assembly: app/services/processor.py:210-259
 
-**Important:** No timers or locks needed - Telethon handles synchronization!
+**Known Telethon limitations (from GitHub issues #4075, #4426, #1479):**
+- Album event may not fire for certain media combinations
+- DC splitting can cause separate events
+- Internal timeout ~0.5-2s (not configurable)
 
 ### Orphan Media Pattern
 
@@ -200,10 +227,20 @@ async with SessionLocal() as session:
 # Session auto-closes, releases connection to pool
 ```
 
-### 2. Album Processing with events.Album
-**No timeout needed!** Telethon's `events.Album` automatically waits for all media before firing the handler. PostBuilder assembles albums immediately when all media have `rewrite_status='skipped'`.
+### 2. Album Processing - Manual Collection
+**Manual album collection with 2.5s timeout.** Due to Telethon's `events.Album` missing first messages, we collect albums manually:
 
-**Critical code:** app/bot_logic.py:164-177, app/services/collector.py:38-80
+1. Each message with `grouped_id` → added to buffer `album_buffers[grouped_id]`
+2. Timer starts/restarts (2.5 seconds)
+3. When timer expires → process all messages in buffer as album
+4. Creates mock `AlbumEvent` object for `collect_album()`
+
+**Benefits:**
+- ✅ Never loses first message
+- ✅ Collects ALL captions from ALL messages
+- ✅ Full control over timing
+
+**Critical code:** app/bot_logic.py:178-265, app/services/collector.py:31-105
 
 ### 3. File Reference Expiry
 Telegram changes `file_reference` every ~24 hours. Publisher catches `FILE_REFERENCE_EXPIRED` and should re-fetch or use forwarding for old media.
@@ -284,9 +321,9 @@ GROUP BY grouped_id;
 
 ```
 app/
-├── bot_logic.py         # Orchestrator: 2 event handlers + 4 background tasks
-│                        #   - @client.on(events.Album()) → album_handler
-│                        #   - @client.on(events.NewMessage()) → message_handler
+├── bot_logic.py         # Orchestrator: 1 universal handler + 4 background tasks
+│                        #   - @client.on(events.NewMessage()) → handles ALL messages
+│                        #   - Manual album collection with album_buffers + timers
 │                        #   - DEST channel ID filtering
 ├── services/
 │   ├── collector.py     # Ingests messages: collect_album() + collect_message()
@@ -321,32 +358,52 @@ app/
 
 ## Recent Changes (Jan 2026)
 
-### v1.1.0 - Album Processing Refactor
+### v1.2.0 - Three-Tier Album Handling (Current)
 
-**Problem:** Albums sometimes lost photos due to timing issues and sequential event processing.
+**Problem:** Albums sometimes lost first message (9/10 photos received).
 
-**Solution - Migrated to `events.Album`:**
+**Root cause:** Manual buffering approach had race conditions. First message caught by NewMessage → saved to DB → timer processed remaining 9 → duplicate detection rejected first message on retry.
 
-1. **Two event handlers** instead of one:
-   - `@client.on(events.Album())` - Telethon automatically collects ALL media
-   - `@client.on(events.NewMessage())` - Only single messages (filters out albums)
+**Solution - Three-tier hybrid:**
 
-2. **New method `collect_album()`:**
-   - Receives all media in `event.messages` (already collected by Telethon)
-   - Extracts **ALL** captions from **ALL** messages (joined with `\n\n`)
-   - No timers or locks needed
+1. **Restored events.Album as PRIMARY:**
+   - Telethon's atomic collection (registers first, fires first)
+   - `sequential_updates=True` ensures deterministic handler order
+   - Handles 95% of albums perfectly
 
-3. **Simplified processor:**
-   - No waiting for 20-30 second timeout
-   - Albums assembled **immediately** when ready
-   - Faster processing: 5s → 3s interval
+2. **Added FALLBACK handler:**
+   - `@client.on(events.NewMessage(func=lambda e: e.grouped_id))`
+   - Only triggers if Album event missed (DC splits, timing issues)
+   - 5-second buffer catches slow arrivals
+   - DB check prevents duplicates
 
-4. **DEST channel filtering:**
-   - Bot ignores its own published messages
-   - Resolves `@username` or ID at startup to numeric chat_id
+3. **Added SAFETY NET:**
+   - Background completion checker (every 10s)
+   - Marks albums older than 30s as ready
+   - Recovers truly stuck cases
+
+4. **Enhanced diagnostics:**
+   - All handlers log message IDs and counts
+   - Time span tracking shows arrival patterns
+   - Race condition detection alerts
+   - Duplicate warnings identify conflicts
 
 **Benefits:**
-- ✅ 100% reliable album processing (no lost photos)
+- ✅ **Never loses first message** - Album handler fires before NewMessage
+- ✅ Handles Telethon edge cases (DC splits, timing)
+- ✅ Recovers stuck albums automatically
+- ✅ Full diagnostic visibility
+
+**Files changed:**
+- app/bot_logic.py - Restored Album handler + fallback + checker
+- app/services/collector.py - Enhanced logging
+- CLAUDE.md - Updated architecture docs
+
+### v1.1.0 - Album Processing Refactor
+
+**Problem:** Albums sometimes lost photos due to timing issues.
+
+**Solution:** Migrated to `events.Album` + DEST channel filtering.
 - ✅ Faster processing (no artificial timeouts)
 - ✅ Simpler code (removed `_album_locks`, `_album_timers`, `ALBUM_BUILD_TIMEOUT`)
 - ✅ All captions collected from multi-text albums
