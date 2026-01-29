@@ -1,9 +1,10 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 from app.models.message import MessageQueue
-from app.models.source import Source
 from app.config import AWAIT_TEXT_TIMEOUT
 from datetime import datetime, timedelta
+from collections import defaultdict
+import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ class MessageCollector:
 
     def __init__(self, db_session: AsyncSession):
         self.db = db_session
+        self._album_locks = defaultdict(asyncio.Lock)
 
     async def collect_album(self, event):
         """
@@ -37,15 +39,6 @@ class MessageCollector:
 
         if not messages:
             logger.warning(f"⚠️ Пустой альбом от {chat_id}")
-            return
-
-        # Проверяем активность источника
-        stmt = select(Source).where(Source.chat_id == chat_id)
-        result = await self.db.execute(stmt)
-        source = result.scalar_one_or_none()
-
-        if not source or not source.is_active:
-            logger.debug(f"⏭️ Источник {chat_id} неактивен или не найден")
             return
 
         # Собираем ВСЕ тексты из всех сообщений альбома
@@ -130,15 +123,6 @@ class MessageCollector:
             f"media_type={type(msg.media).__name__ if msg.media else None}"
         )
 
-        # Проверяем активность источника
-        stmt = select(Source).where(Source.chat_id == chat_id)
-        result = await self.db.execute(stmt)
-        source = result.scalar_one_or_none()
-
-        if not source or not source.is_active:
-            logger.debug(f"⏭️ Источник {chat_id} неактивен или не найден")
-            return
-        
         # Проверяем дубликат
         stmt = select(MessageQueue).where(
             MessageQueue.source_id == chat_id,

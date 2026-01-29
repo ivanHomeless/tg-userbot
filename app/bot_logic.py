@@ -127,15 +127,33 @@ class TGBot:
         except Exception as e:
             logger.error(f"❌ Ошибка добавления источника {link}: {e}")
     
+    async def is_source_active(self, chat_id: int) -> bool:
+        """
+        Проверка активности источника
+
+        Возвращает True, если источник есть в БД и активен
+        """
+        async with SessionLocal() as session:
+            from sqlalchemy import select
+
+            stmt = select(Source).where(Source.chat_id == chat_id)
+            result = await session.execute(stmt)
+            source = result.scalar_one_or_none()
+
+            if not source or not source.is_active:
+                return False
+
+            return True
+
     async def shutdown(self):
         """Корректное завершение работы бота"""
         logger.info("🔄 Закрытие соединений...")
-        
+
         # Закрываем Telethon
         if self.client.is_connected():
             await self.client.disconnect()
             logger.info("✅ Telethon отключён")
-        
+
         # Закрываем пул соединений PostgreSQL
         from app.database.engine import engine
         await engine.dispose()
@@ -169,6 +187,11 @@ class TGBot:
                 logger.debug(f"⏭️ Пропущен альбом из DEST канала: {event.chat_id}")
                 return
 
+            # Проверяем активность источника до создания collector
+            if not await self.is_source_active(event.chat_id):
+                logger.debug(f"⏭️ Источник {event.chat_id} неактивен или не найден")
+                return
+
             try:
                 async with SessionLocal() as session:
                     collector = MessageCollector(session)
@@ -187,6 +210,11 @@ class TGBot:
             # Пропускаем альбомы (они обрабатываются в album_handler)
             if event.message.grouped_id:
                 logger.debug(f"⏭️ Пропущен альбом в NewMessage (обработан в Album): {event.chat_id}/{event.message.id}")
+                return
+
+            # Проверяем активность источника до создания collector
+            if not await self.is_source_active(event.chat_id):
+                logger.debug(f"⏭️ Источник {event.chat_id} неактивен или не найден")
                 return
 
             try:
