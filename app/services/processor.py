@@ -2,7 +2,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_, func
 from app.models.message import MessageQueue
 from app.models.post import Post, PostMedia
-from app.config import MEDIA_ONLY_CAPTION
+
 from app import ai
 from datetime import datetime
 import logging
@@ -209,8 +209,7 @@ class MessageProcessor:
                 logger.error(f"❌ Ошибка рерайта альбома: {e}")
                 final_text = combined_original  # fallback на оригинал
         else:
-            final_text = MEDIA_ONLY_CAPTION
-            logger.info(f"📸 Альбом без текста — добавлена стандартная подпись")
+            final_text = ""
 
         # Создаём пост
         post = Post(
@@ -248,10 +247,6 @@ class MessageProcessor:
         """Создаёт пост из одиночного сообщения"""
         final_text = msg.rewritten_text or ""
         
-        # Если только медиа без текста — добавляем стандартную подпись
-        if msg.media_type and not final_text:
-            final_text = MEDIA_ONLY_CAPTION
-            logger.info(f"📸 Медиа без текста — добавлена стандартная подпись")
         
         # Создаём пост
         post = Post(
